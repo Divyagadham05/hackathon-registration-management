@@ -1,0 +1,45 @@
+.env
+.env.*
+!.env.example
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+__pycache__/
+node_modules/
+.env
+__pycache__/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+
+# Dependencies
+node_modules/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Frontend build output
+frontend/dist/
+
+# Local database
+backend/instance/
+
+frontend/dist/
+
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+node_modules/
+__pycache__/
+*.py[cod]
+frontend/dist/
+backend/instance/
+
+
