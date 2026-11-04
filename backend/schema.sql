@@ -35,3 +35,17 @@ CREATE TABLE IF NOT EXISTS registrations (
     email_notice TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS food_facilities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    facility_type TEXT NOT NULL UNIQUE,
+    timing TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    items TEXT,
+    availability TEXT NOT NULL DEFAULT 'Not Announced Yet',
+    price_status TEXT NOT NULL DEFAULT 'Not Announced Yet',
+    charges TEXT,
+    location TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

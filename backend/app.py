@@ -8,14 +8,38 @@ import secrets
 import smtplib
 import sqlite3
 import ssl
-from datetime import date
+import threading
+import time
+from collections import deque
+from datetime import date, datetime
 from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlparse
 
+import psycopg
 from dotenv import load_dotenv
 from flask import Flask, Response, g, jsonify, request, session
+from groq import APIError
 from werkzeug.security import check_password_hash, generate_password_hash
+
+if __package__:
+    from .chatbot import (
+        ChatbotNotConfigured,
+        ChatbotResponseError,
+        get_chatbot_reply,
+        get_food_facility_reply,
+    )
+    from .database import connect_database
+    from .project_knowledge import ProjectKnowledgeUnavailable
+else:
+    from chatbot import (
+        ChatbotNotConfigured,
+        ChatbotResponseError,
+        get_chatbot_reply,
+        get_food_facility_reply,
+    )
+    from database import connect_database
+    from project_knowledge import ProjectKnowledgeUnavailable
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -32,6 +56,18 @@ DOMAINS = {
 }
 DEGREES = {"B.Tech", "B.Sc", "BCA", "MCA", "M.Tech", "Other"}
 STATUSES = {"Submitted", "Under Review", "Accepted", "Waitlisted", "Rejected"}
+FOOD_FACILITY_TYPES = (
+    "Breakfast",
+    "Lunch",
+    "Evening Snacks",
+    "Dinner",
+    "Tea Stall",
+    "Coffee Stall",
+    "Other Beverages",
+    "Drinking Water",
+)
+FOOD_AVAILABILITY_OPTIONS = {"Available", "Unavailable", "Not Announced Yet"}
+FOOD_PRICE_OPTIONS = {"Free", "Paid", "Not Announced Yet"}
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -41,25 +77,33 @@ def create_app():
     if not secret_key:
         raise RuntimeError("Set SECRET_KEY in backend/.env before starting the application.")
 
-    database_path = Path(os.environ.get("DATABASE_PATH", "instance/hackathon.db"))
-    if not database_path.is_absolute():
-        database_path = BASE_DIR / database_path
-    database_path.parent.mkdir(parents=True, exist_ok=True)
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    database_path = None
+    if not database_url:
+        database_path = Path(os.environ.get("DATABASE_PATH", "instance/hackathon.db"))
+        if not database_path.is_absolute():
+            database_path = BASE_DIR / database_path
+        database_path.parent.mkdir(parents=True, exist_ok=True)
 
     app.config.update(
         SECRET_KEY=secret_key,
         DATABASE=database_path,
+        DATABASE_URL=database_url or None,
+        DATABASE_TYPE="postgres" if database_url else "sqlite",
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true",
         MAX_CONTENT_LENGTH=1024 * 1024,
     )
+    chat_requests = {}
+    chat_requests_lock = threading.Lock()
 
     def get_db():
         if "db" not in g:
-            g.db = sqlite3.connect(app.config["DATABASE"])
-            g.db.row_factory = sqlite3.Row
-            g.db.execute("PRAGMA foreign_keys = ON")
+            g.db = connect_database(
+                app.config["DATABASE_URL"],
+                app.config["DATABASE"],
+            )
         return g.db
 
     app.get_db = get_db
@@ -72,14 +116,42 @@ def create_app():
 
     with app.app_context():
         db = get_db()
-        db.executescript((BASE_DIR / "schema.sql").read_text(encoding="utf-8"))
-        registration_columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(registrations)").fetchall()
-        }
+        schema_name = "schema_postgres.sql" if app.config["DATABASE_TYPE"] == "postgres" else "schema.sql"
+        db.executescript((BASE_DIR / schema_name).read_text(encoding="utf-8"))
+        if app.config["DATABASE_TYPE"] == "postgres":
+            registration_columns = {
+                row["column_name"]
+                for row in db.execute(
+                    """SELECT column_name FROM information_schema.columns
+                       WHERE table_schema = current_schema() AND table_name = 'registrations'"""
+                ).fetchall()
+            }
+        else:
+            registration_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(registrations)").fetchall()
+            }
         if "email_sent" not in registration_columns:
-            db.execute("ALTER TABLE registrations ADD COLUMN email_sent INTEGER NOT NULL DEFAULT 0")
+            default = "FALSE" if app.config["DATABASE_TYPE"] == "postgres" else "0"
+            db.execute(
+                f"ALTER TABLE registrations ADD COLUMN email_sent BOOLEAN NOT NULL DEFAULT {default}"
+            )
         if "email_notice" not in registration_columns:
             db.execute("ALTER TABLE registrations ADD COLUMN email_notice TEXT")
+        if app.config["DATABASE_TYPE"] == "postgres":
+            food_columns = {
+                row["column_name"]
+                for row in db.execute(
+                    """SELECT column_name FROM information_schema.columns
+                       WHERE table_schema = current_schema() AND table_name = 'food_facilities'"""
+                ).fetchall()
+            }
+        else:
+            food_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(food_facilities)").fetchall()
+            }
+        for column in ("start_time", "end_time", "items"):
+            if column not in food_columns:
+                db.execute(f"ALTER TABLE food_facilities ADD COLUMN {column} TEXT")
         admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
         admin_password = os.environ.get("ADMIN_PASSWORD", "")
         if admin_email and admin_password:
@@ -87,9 +159,9 @@ def create_app():
                 raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters.")
             db.execute(
                 """INSERT INTO users (full_name, email, password_hash, is_admin)
-                   VALUES (?, ?, ?, 1)
+                   VALUES (?, ?, ?, TRUE)
                    ON CONFLICT(email) DO UPDATE SET
-                       is_admin = 1,
+                       is_admin = TRUE,
                        password_hash = excluded.password_hash""",
                 (
                     "Hackathon Organizer",
@@ -132,10 +204,111 @@ def create_app():
             return None, error("Administrator access is required.", 403)
         return user, None
 
+    def consume_chat_request(user_id):
+        now = time.monotonic()
+        window_start = now - 60
+        with chat_requests_lock:
+            timestamps = chat_requests.setdefault(user_id, deque())
+            while timestamps and timestamps[0] <= window_start:
+                timestamps.popleft()
+            if len(timestamps) >= 10:
+                return False
+            timestamps.append(now)
+            return True
+
+    def food_facility_dict(row, public=False):
+        if row is None:
+            result = {
+                "id": None,
+                "facility_type": None,
+                "timing": None,
+                "start_time": None,
+                "end_time": None,
+                "items": None,
+                "availability": None,
+                "price_status": None,
+                "charges": None,
+                "location": None,
+                "updated_at": None,
+            }
+        else:
+            result = dict(row)
+        if public:
+            result["timing"] = result["timing"] or "Not Announced Yet"
+            result["start_time"] = result["start_time"] or "Not Announced Yet"
+            result["end_time"] = result["end_time"] or "Not Announced Yet"
+            result["items"] = result["items"] or "Not Announced Yet"
+            result["availability"] = result["availability"] or "Not Announced Yet"
+            result["price_status"] = result["price_status"] or "Not Announced Yet"
+            result["charges"] = result["charges"] or (
+                "Free" if result["price_status"] == "Free" else "Not Announced Yet"
+            )
+            result["location"] = result["location"] or "Not Announced Yet"
+        return result
+
+    def validate_food_facility(data):
+        if not isinstance(data, dict):
+            return None, {"facility_type": "Provide food facility details."}
+        field_errors = {}
+        facility_type = data.get("facility_type")
+        if not isinstance(facility_type, str) or facility_type not in FOOD_FACILITY_TYPES:
+            field_errors["facility_type"] = "Choose a valid food facility."
+
+        text_fields = {
+            "timing": 120,
+            "items": 2000,
+            "charges": 100,
+            "location": 300,
+        }
+        values = {}
+        for field, max_length in text_fields.items():
+            value = data.get(field, "")
+            if not isinstance(value, str):
+                field_errors[field] = "Enter text for this field."
+                continue
+            value = value.strip()
+            if len(value) > max_length:
+                field_errors[field] = f"Use no more than {max_length} characters."
+            values[field] = value or None
+
+        for field in ("start_time", "end_time"):
+            value = data.get(field, "")
+            if not isinstance(value, str):
+                field_errors[field] = "Enter a valid time."
+                continue
+            value = value.strip()
+            if value and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                field_errors[field] = "Enter a valid time."
+            values[field] = value or None
+        if values.get("start_time") or values.get("end_time"):
+            values["timing"] = None
+
+        availability = data.get("availability")
+        if not isinstance(availability, str) or availability not in FOOD_AVAILABILITY_OPTIONS:
+            field_errors["availability"] = "Choose a valid availability."
+        price_status = data.get("price_status")
+        if not isinstance(price_status, str) or price_status not in FOOD_PRICE_OPTIONS:
+            field_errors["price_status"] = "Choose a valid free/paid status."
+        charges = values.get("charges")
+        if price_status == "Paid" and not charges:
+            field_errors["charges"] = "Enter the price for a paid facility."
+        if field_errors:
+            return None, field_errors
+        if price_status == "Free":
+            values["charges"] = None
+        values.update(
+            facility_type=facility_type,
+            availability=availability,
+            price_status=price_status,
+        )
+        return values, None
+
     def registration_to_dict(row):
         result = dict(row)
         result["team_members"] = json.loads(result["team_members"])
         result["team_size"] = int(result["team_size"]) if result["team_size"] is not None else None
+        if isinstance(result.get("created_at"), datetime):
+            result["created_at"] = result["created_at"].isoformat(sep=" ", timespec="seconds")
         return result
 
     @app.get("/api/csrf")
@@ -180,16 +353,19 @@ def create_app():
 
         db = get_db()
         try:
-            cursor = db.execute(
+            db.execute(
                 "INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)",
                 (name, email, generate_password_hash(password)),
             )
             db.commit()
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, psycopg.IntegrityError):
             db.rollback()
             return error("An account with that email already exists.", 409)
         session.clear()
-        session["user_id"] = cursor.lastrowid
+        session["user_id"] = db.execute(
+            "SELECT id FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()["id"]
         session["csrf_token"] = secrets.token_urlsafe(32)
         return jsonify(
             {
@@ -424,7 +600,7 @@ Hackathon Organizing Team
                 tuple(json.dumps(values[column]) if column == "team_members" else values[column] for column in columns),
             )
             db.commit()
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, psycopg.IntegrityError):
             db.rollback()
             return error("A registration already exists for this account.", 409)
         row = db.execute("SELECT * FROM registrations WHERE user_id = ?", (user["id"],)).fetchone()
@@ -432,7 +608,7 @@ Hackathon Organizing Team
         email_sent, email_message = send_confirmation(saved)
         db.execute(
             "UPDATE registrations SET email_sent = ?, email_notice = ? WHERE user_id = ?",
-            (int(email_sent), email_message, user["id"]),
+            (email_sent, email_message, user["id"]),
         )
         db.commit()
         return jsonify(
@@ -454,7 +630,11 @@ Hackathon Organizing Team
         query = "SELECT * FROM registrations WHERE 1=1"
         params = []
         if search:
-            query += " AND (full_name LIKE ? OR email LIKE ? OR college_name LIKE ? OR registration_id LIKE ?)"
+            match_operator = "ILIKE" if app.config["DATABASE_TYPE"] == "postgres" else "LIKE"
+            query += (
+                f" AND (full_name {match_operator} ? OR email {match_operator} ?"
+                f" OR college_name {match_operator} ? OR registration_id {match_operator} ?)"
+            )
             params.extend([f"%{search}%"] * 4)
         if participation in {"Individual", "Team"}:
             query += " AND participation_type = ?"
@@ -465,6 +645,135 @@ Hackathon Organizing Team
         query += " ORDER BY created_at DESC"
         rows = get_db().execute(query, params).fetchall()
         return jsonify({"registrations": [registration_to_dict(row) for row in rows]})
+
+    @app.get("/api/food-facilities")
+    def public_food_facilities():
+        rows = get_db().execute(
+            "SELECT * FROM food_facilities ORDER BY id"
+        ).fetchall()
+        stored = {
+            row["facility_type"]: row
+            for row in rows
+        }
+        facilities = []
+        for facility_type in FOOD_FACILITY_TYPES:
+            item = food_facility_dict(stored.get(facility_type), public=True)
+            item["facility_type"] = facility_type
+            facilities.append(item)
+        return jsonify({"food_facilities": facilities})
+
+    @app.get("/api/admin/food-facilities")
+    def admin_food_facilities():
+        _, auth_error = require_user(admin=True)
+        if auth_error:
+            return auth_error
+        rows = get_db().execute(
+            "SELECT * FROM food_facilities ORDER BY id"
+        ).fetchall()
+        return jsonify({"food_facilities": [food_facility_dict(row) for row in rows]})
+
+    @app.post("/api/admin/food-facilities")
+    def create_food_facility():
+        _, auth_error = require_user(admin=True)
+        if auth_error:
+            return auth_error
+        csrf_error = require_csrf()
+        if csrf_error:
+            return csrf_error
+        values, field_errors = validate_food_facility(request.get_json(silent=True))
+        if field_errors:
+            return error("Check the food facility details.", field_errors=field_errors)
+        db = get_db()
+        try:
+            cursor = db.execute(
+                """INSERT INTO food_facilities
+                   (facility_type, timing, start_time, end_time, items, availability,
+                    price_status, charges, location)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
+                (
+                    values["facility_type"],
+                    values["timing"],
+                    values["start_time"],
+                    values["end_time"],
+                    values["items"],
+                    values["availability"],
+                    values["price_status"],
+                    values["charges"],
+                    values["location"],
+                ),
+            )
+            facility_id = cursor.fetchone()["id"]
+            db.commit()
+        except (sqlite3.IntegrityError, psycopg.IntegrityError):
+            db.rollback()
+            return error("This food facility already exists. Edit the existing entry.", 409)
+        row = db.execute(
+            "SELECT * FROM food_facilities WHERE id = ?",
+            (facility_id,),
+        ).fetchone()
+        return jsonify({"food_facility": food_facility_dict(row)}), 201
+
+    @app.put("/api/admin/food-facilities/<int:facility_id>")
+    def update_food_facility(facility_id):
+        _, auth_error = require_user(admin=True)
+        if auth_error:
+            return auth_error
+        csrf_error = require_csrf()
+        if csrf_error:
+            return csrf_error
+        values, field_errors = validate_food_facility(request.get_json(silent=True))
+        if field_errors:
+            return error("Check the food facility details.", field_errors=field_errors)
+        db = get_db()
+        try:
+            cursor = db.execute(
+                """UPDATE food_facilities
+                   SET facility_type = ?, timing = ?, start_time = ?, end_time = ?, items = ?,
+                       availability = ?, price_status = ?, charges = ?, location = ?,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (
+                    values["facility_type"],
+                    values["timing"],
+                    values["start_time"],
+                    values["end_time"],
+                    values["items"],
+                    values["availability"],
+                    values["price_status"],
+                    values["charges"],
+                    values["location"],
+                    facility_id,
+                ),
+            )
+        except (sqlite3.IntegrityError, psycopg.IntegrityError):
+            db.rollback()
+            return error("This food facility already exists. Edit the existing entry.", 409)
+        if cursor.rowcount == 0:
+            return error("Food facility not found.", 404)
+        db.commit()
+        row = db.execute(
+            "SELECT * FROM food_facilities WHERE id = ?",
+            (facility_id,),
+        ).fetchone()
+        return jsonify({"food_facility": food_facility_dict(row)})
+
+    @app.delete("/api/admin/food-facilities/<int:facility_id>")
+    def delete_food_facility(facility_id):
+        _, auth_error = require_user(admin=True)
+        if auth_error:
+            return auth_error
+        csrf_error = require_csrf()
+        if csrf_error:
+            return csrf_error
+        db = get_db()
+        cursor = db.execute(
+            "DELETE FROM food_facilities WHERE id = ?",
+            (facility_id,),
+        )
+        if cursor.rowcount == 0:
+            return error("Food facility not found.", 404)
+        db.commit()
+        return jsonify({"ok": True})
 
     @app.get("/api/admin/export.csv")
     def export_registrations():
@@ -518,6 +827,85 @@ Hackathon Organizing Team
     @app.get("/api/config")
     def public_config():
         return jsonify({"hackathon_name": os.environ.get("HACKATHON_NAME", "Hack the Future")})
+
+    @app.post("/api/chat")
+    def chat():
+        user, auth_error = require_user()
+        if auth_error:
+            return auth_error
+        csrf_error = require_csrf()
+        if csrf_error:
+            return csrf_error
+
+        data = request.get_json(silent=True)
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(messages, list) or not 1 <= len(messages) <= 12:
+            return error("Send up to 12 chat messages.", 400)
+
+        validated_messages = []
+        total_characters = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                return error("Check the chat message format.", 400)
+            role = message.get("role")
+            content = message.get("content")
+            if not isinstance(role, str) or role not in {"user", "assistant"} or not isinstance(content, str):
+                return error("Check the chat message format.", 400)
+            content = content.strip()
+            if not content or len(content) > 1200:
+                return error("Each chat message must contain 1–1,200 characters.", 400)
+            total_characters += len(content)
+            if total_characters > 6000:
+                return error("The recent chat history is too long. Start a new conversation.", 400)
+            validated_messages.append({"role": role, "content": content})
+
+        if validated_messages[-1]["role"] != "user":
+            return error("Your latest chat message must be from you.", 400)
+        if not consume_chat_request(user["id"]):
+            response, status = error(
+                "You have reached the chat limit. Please wait a minute and try again.",
+                429,
+            )
+            response.headers["Retry-After"] = "60"
+            return response, status
+
+        food_rows = get_db().execute(
+            "SELECT * FROM food_facilities ORDER BY id"
+        ).fetchall()
+        stored_food = {
+            row["facility_type"]: food_facility_dict(row, public=True)
+            for row in food_rows
+        }
+        food_facilities = []
+        for facility_type in FOOD_FACILITY_TYPES:
+            item = stored_food.get(facility_type)
+            if item is None:
+                item = food_facility_dict(None, public=True)
+                item["facility_type"] = facility_type
+            food_facilities.append(item)
+        food_reply = get_food_facility_reply(validated_messages, food_facilities)
+        if food_reply is not None:
+            return jsonify({"reply": food_reply})
+
+        try:
+            reply = get_chatbot_reply(
+                validated_messages,
+                os.environ.get("HACKATHON_NAME", "Hack the Future"),
+            )
+        except ChatbotNotConfigured:
+            app.logger.error("Groq chatbot is unavailable because GROQ_API_KEY is not configured.")
+            return error("The chat assistant is not configured yet. Please contact the organizer.", 503)
+        except ProjectKnowledgeUnavailable:
+            app.logger.exception("The chatbot could not retrieve project knowledge.")
+            return error("Project information is temporarily unavailable. Please try again.", 503)
+        except ChatbotResponseError:
+            app.logger.error("Groq chatbot returned an empty or invalid response.")
+            return error("The chat assistant could not create a reply. Please try again.", 502)
+        except APIError:
+            app.logger.exception("Groq chatbot request failed.")
+            return error("The chat assistant is temporarily unavailable. Please try again.", 502)
+
+        return jsonify({"reply": reply})
 
     return app
 

@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import Chatbot from "./Chatbot.jsx";
 
 const DOMAINS = [
   "Artificial Intelligence",
@@ -10,6 +12,49 @@ const DOMAINS = [
 ];
 const DEGREES = ["B.Tech", "B.Sc", "BCA", "MCA", "M.Tech", "Other"];
 const STATUS_OPTIONS = ["Submitted", "Under Review", "Accepted", "Waitlisted", "Rejected"];
+const FOOD_FACILITY_TYPES = [
+  "Breakfast",
+  "Lunch",
+  "Evening Snacks",
+  "Dinner",
+  "Tea Stall",
+  "Coffee Stall",
+  "Other Beverages",
+  "Drinking Water",
+];
+const MEAL_FACILITY_TYPES = ["Breakfast", "Lunch", "Evening Snacks", "Dinner"];
+const FOOD_AVAILABILITY_OPTIONS = ["Available", "Unavailable", "Not Announced Yet"];
+const FOOD_PRICE_OPTIONS = ["Free", "Paid", "Not Announced Yet"];
+
+const emptyFoodForm = () => ({
+  facility_type: "",
+  timing: "",
+  start_time: "",
+  end_time: "",
+  items: "",
+  availability: "Not Announced Yet",
+  price_status: "Not Announced Yet",
+  charges: "",
+  location: "",
+});
+
+function formatFoodTime(value) {
+  if (!value) return "";
+  const [hours, minutes] = value.split(":").map(Number);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return value;
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
+}
+
+function displayFoodTiming(facility) {
+  const startTime = facility.start_time === "Not Announced Yet" ? "" : facility.start_time;
+  const endTime = facility.end_time === "Not Announced Yet" ? "" : facility.end_time;
+  if (startTime && endTime) {
+    return `${formatFoodTime(startTime)} – ${formatFoodTime(endTime)}`;
+  }
+  if (startTime) return formatFoodTime(startTime);
+  if (endTime) return formatFoodTime(endTime);
+  return facility.timing || "Not Announced Yet";
+}
 
 const emptyForm = (user) => ({
   full_name: user?.full_name || "",
@@ -104,6 +149,69 @@ function Field({ label, name, value, onChange, error, required, hint, as = "inpu
   );
 }
 
+function FoodFacilityCard({ facility, kind }) {
+  const isWater = kind === "water";
+  const timing = displayFoodTiming(facility);
+  const priceStatus = facility.price_status || "Not Announced Yet";
+  const priceLabel = priceStatus === "Free"
+    ? isWater || kind !== "meal" ? "FREE" : "FREE for registered participants"
+    : priceStatus === "Paid" ? "PAID" : priceStatus;
+  const rows = isWater
+    ? [
+        ["Drinking water", priceStatus === "Paid" && facility.charges ? `PAID · ${facility.charges}` : priceLabel],
+        ["Availability", facility.availability || "Not Announced Yet"],
+        ["Water station locations", facility.location || "Not Announced Yet"],
+      ]
+    : [
+        ["Serving time", timing],
+        ["Food items", facility.items || "Not Announced Yet"],
+        ["Price", priceStatus === "Paid" ? facility.charges || "Not Announced Yet" : priceLabel],
+        ["Serving location", facility.location || "Not Announced Yet"],
+      ];
+
+  return (
+    <article className="food-public-card">
+      <span className="food-card-mark" aria-hidden="true">✦</span>
+      <span className="section-kicker">{isWater ? "WATER STATION" : "ORGANIZER MEAL SERVICE"}</span>
+      <h2>{facility.facility_type === "Drinking Water" ? "Drinking Water" : facility.facility_type}</h2>
+      {!isWater && <span className={`food-price-badge ${priceStatus === "Free" ? "food-price-free" : priceStatus === "Paid" ? "food-price-paid" : ""}`}>{priceLabel}</span>}
+      <dl>
+        {rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+      </dl>
+    </article>
+  );
+}
+
+function TeaCoffeeStallsCard({ tea, coffee, otherBeverages }) {
+  const price = (facility) => {
+    if (facility?.price_status === "Free") return "FREE";
+    if (facility?.price_status === "Paid") return `PAID${facility.charges ? ` · ${facility.charges}` : ""}`;
+    return "Not Announced Yet";
+  };
+  const value = (text) => text || "Not Announced Yet";
+  const rows = [
+    ["Tea serving time", tea ? displayFoodTiming(tea) : "Not Announced Yet"],
+    ["Tea stall availability", value(tea?.availability)],
+    ["Tea stall location", value(tea?.location)],
+    ["Tea price", price(tea)],
+    ["Coffee serving time", coffee ? displayFoodTiming(coffee) : "Not Announced Yet"],
+    ["Coffee stall availability", value(coffee?.availability)],
+    ["Coffee stall location", value(coffee?.location)],
+    ["Coffee price", price(coffee)],
+    ["Other beverages", value(otherBeverages?.items)],
+    ["Other beverage prices", price(otherBeverages)],
+  ];
+  return (
+    <article className="food-public-card food-stall-card">
+      <span className="food-card-mark" aria-hidden="true">✦</span>
+      <span className="section-kicker">STALLS &amp; BEVERAGES</span>
+      <h2>Tea &amp; Coffee Stalls</h2>
+      <p className="food-card-intro">Prices and payment status are set by organizers. Tea and coffee are not assumed to be complimentary.</p>
+      <dl>{rows.map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}</dl>
+    </article>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [csrf, setCsrf] = useState("");
@@ -121,6 +229,11 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [adminRows, setAdminRows] = useState([]);
   const [adminFilters, setAdminFilters] = useState({ q: "", participation_type: "", domain: "" });
+  const [adminSection, setAdminSection] = useState("registrations");
+  const [foodFacilities, setFoodFacilities] = useState([]);
+  const [foodForm, setFoodForm] = useState(emptyFoodForm);
+  const [editingFoodId, setEditingFoodId] = useState(null);
+  const [savingFood, setSavingFood] = useState(false);
   const [selectedRegistration, setSelectedRegistration] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
@@ -292,8 +405,13 @@ function App() {
     setBusy(true);
     try {
       const params = new URLSearchParams(Object.entries(adminFilters).filter(([, value]) => value));
-      const response = await request(`/api/admin/registrations?${params}`);
-      setAdminRows(response.registrations);
+      const [registrationResponse, foodResponse] = await Promise.all([
+        request(`/api/admin/registrations?${params}`),
+        request("/api/admin/food-facilities"),
+      ]);
+      setAdminRows(registrationResponse.registrations);
+      setFoodFacilities(foodResponse.food_facilities);
+      setAdminSection("registrations");
       navigate("admin");
     } catch (error) {
       setErrorMessage(error.message);
@@ -307,6 +425,82 @@ function App() {
       const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
       const response = await request(`/api/admin/registrations?${params}`);
       setAdminRows(response.registrations);
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function loadFoodPage() {
+    setBusy(true);
+    try {
+      const response = await request("/api/food-facilities");
+      setFoodFacilities(response.food_facilities);
+      navigate("food");
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAdminFood() {
+    const response = await request("/api/admin/food-facilities");
+    setFoodFacilities(response.food_facilities);
+  }
+
+  function editFoodFacility(facility) {
+    setEditingFoodId(facility.id);
+    setFoodForm({
+      facility_type: facility.facility_type,
+      timing: facility.timing || "",
+      start_time: facility.start_time || "",
+      end_time: facility.end_time || "",
+      items: facility.items || "",
+      availability: facility.availability || "Not Announced Yet",
+      price_status: facility.price_status || "Not Announced Yet",
+      charges: facility.charges || "",
+      location: facility.location || "",
+    });
+  }
+
+  async function saveFoodFacility(event) {
+    event.preventDefault();
+    setSavingFood(true);
+    setErrorMessage("");
+    try {
+      await request(
+        editingFoodId === null
+          ? "/api/admin/food-facilities"
+          : `/api/admin/food-facilities/${editingFoodId}`,
+        {
+          method: editingFoodId === null ? "POST" : "PUT",
+          headers: { "X-CSRF-Token": csrf },
+          body: JSON.stringify(foodForm),
+        },
+      );
+      await refreshAdminFood();
+      setEditingFoodId(null);
+      setFoodForm(emptyFoodForm());
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setSavingFood(false);
+    }
+  }
+
+  async function deleteFoodFacility(facility) {
+    if (!window.confirm(`Delete the ${facility.facility_type} information?`)) return;
+    setErrorMessage("");
+    try {
+      await request(`/api/admin/food-facilities/${facility.id}`, {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": csrf },
+      });
+      await refreshAdminFood();
+      if (editingFoodId === facility.id) {
+        setEditingFoodId(null);
+        setFoodForm(emptyFoodForm());
+      }
     } catch (error) {
       setErrorMessage(error.message);
     }
@@ -348,6 +542,7 @@ function App() {
         <nav className={mobileMenu ? "main-nav nav-open" : "main-nav"}>
           <a href="#about" onClick={(event) => { event.preventDefault(); navigate("home"); document.getElementById("about")?.scrollIntoView({ behavior: "smooth" }); }}>About</a>
           <a href="#tracks" onClick={(event) => { event.preventDefault(); navigate("home"); document.getElementById("tracks")?.scrollIntoView({ behavior: "smooth" }); }}>Tracks</a>
+          <button className="nav-link" onClick={loadFoodPage} disabled={busy}>Food &amp; Facilities</button>
           {user && <button className="nav-link" onClick={showMyRegistration}>My registration</button>}
           {user?.is_admin && <button className="nav-link" onClick={loadAdmin}>Organizer</button>}
           {user ? (
@@ -563,17 +758,108 @@ function App() {
 
       {page === "admin" && user?.is_admin && (
         <main className="admin-page">
-          <div className="page-topline"><span className="section-kicker">ORGANIZER CONSOLE</span><a className="button button-outline button-small" href="/api/admin/export.csv"><Icon name="download" size={16} /> Export CSV</a></div>
-          <div className="admin-title"><div><h1>Participant <span>directory.</span></h1><p>Review registrations and keep the event moving.</p></div><div className="admin-count"><b>{adminRows.length}</b><span>registrations</span></div></div>
-          <div className="admin-filters">
-            <label className="search-box"><span className="search-symbol">⌕</span><input aria-label="Search registrations" placeholder="Search name, email, college or ID..." value={adminFilters.q} onChange={(event) => { const next = { ...adminFilters, q: event.target.value }; setAdminFilters(next); refreshAdmin(next); }} /></label>
-            <select aria-label="Filter by participation type" value={adminFilters.participation_type} onChange={(event) => { const next = { ...adminFilters, participation_type: event.target.value }; setAdminFilters(next); refreshAdmin(next); }}><option value="">All participation</option><option>Individual</option><option>Team</option></select>
-            <select aria-label="Filter by domain" value={adminFilters.domain} onChange={(event) => { const next = { ...adminFilters, domain: event.target.value }; setAdminFilters(next); refreshAdmin(next); }}><option value="">All domains</option>{DOMAINS.map((domain) => <option key={domain}>{domain}</option>)}</select>
+          <div className="page-topline">
+            <span className="section-kicker">ORGANIZER CONSOLE</span>
+            {adminSection === "registrations" && <a className="button button-outline button-small" href="/api/admin/export.csv"><Icon name="download" size={16} /> Export CSV</a>}
           </div>
-          <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>PARTICIPANT</th><th>COLLEGE</th><th>TYPE</th><th>DOMAIN</th><th>STATUS</th><th></th></tr></thead><tbody>
-            {adminRows.map((row) => <tr key={row.registration_id}><td><button className="participant-link" onClick={() => setSelectedRegistration(row)}><b>{row.full_name}</b><span>{row.email}</span></button></td><td>{row.college_name}</td><td>{row.participation_type}</td><td>{row.domain}</td><td><select className="status-select" aria-label={`Status for ${row.full_name}`} value={row.status} onChange={(event) => changeStatus(row, event.target.value)}>{STATUS_OPTIONS.map((status) => <option key={status}>{status}</option>)}</select></td><td><button className="details-button" onClick={() => setSelectedRegistration(row)}>Details <Icon name="arrow" size={15} /></button></td></tr>)}
-            {adminRows.length === 0 && <tr><td colSpan="6" className="table-empty">No registrations match those filters.</td></tr>}
-          </tbody></table></div>
+          <div className="admin-tabs" role="tablist" aria-label="Organizer dashboard sections">
+            <button type="button" role="tab" aria-selected={adminSection === "registrations"} className={adminSection === "registrations" ? "admin-tab admin-tab-active" : "admin-tab"} onClick={() => setAdminSection("registrations")}>Registrations</button>
+            <button type="button" role="tab" aria-selected={adminSection === "food"} className={adminSection === "food" ? "admin-tab admin-tab-active" : "admin-tab"} onClick={() => setAdminSection("food")}>Food &amp; Facilities</button>
+          </div>
+          {adminSection === "registrations" ? (
+            <>
+              <div className="admin-title"><div><h1>Participant <span>directory.</span></h1><p>Review registrations and keep the event moving.</p></div><div className="admin-count"><b>{adminRows.length}</b><span>registrations</span></div></div>
+              <div className="admin-filters">
+                <label className="search-box"><span className="search-symbol">⌕</span><input aria-label="Search registrations" placeholder="Search name, email, college or ID..." value={adminFilters.q} onChange={(event) => { const next = { ...adminFilters, q: event.target.value }; setAdminFilters(next); refreshAdmin(next); }} /></label>
+                <select aria-label="Filter by participation type" value={adminFilters.participation_type} onChange={(event) => { const next = { ...adminFilters, participation_type: event.target.value }; setAdminFilters(next); refreshAdmin(next); }}><option value="">All participation</option><option>Individual</option><option>Team</option></select>
+                <select aria-label="Filter by domain" value={adminFilters.domain} onChange={(event) => { const next = { ...adminFilters, domain: event.target.value }; setAdminFilters(next); refreshAdmin(next); }}><option value="">All domains</option>{DOMAINS.map((domain) => <option key={domain}>{domain}</option>)}</select>
+              </div>
+              <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>PARTICIPANT</th><th>COLLEGE</th><th>TYPE</th><th>DOMAIN</th><th>STATUS</th><th></th></tr></thead><tbody>
+                {adminRows.map((row) => <tr key={row.registration_id}><td><button className="participant-link" onClick={() => setSelectedRegistration(row)}><b>{row.full_name}</b><span>{row.email}</span></button></td><td>{row.college_name}</td><td>{row.participation_type}</td><td>{row.domain}</td><td><select className="status-select" aria-label={`Status for ${row.full_name}`} value={row.status} onChange={(event) => changeStatus(row, event.target.value)}>{STATUS_OPTIONS.map((status) => <option key={status}>{status}</option>)}</select></td><td><button className="details-button" onClick={() => setSelectedRegistration(row)}>Details <Icon name="arrow" size={15} /></button></td></tr>)}
+                {adminRows.length === 0 && <tr><td colSpan="6" className="table-empty">No registrations match those filters.</td></tr>}
+              </tbody></table></div>
+            </>
+          ) : (
+            <section className="food-admin-section">
+              <div className="admin-title"><div><h1>Food <span>&amp; facilities.</span></h1><p>Manage the details shown to participants and in the FAQ assistant.</p></div></div>
+              <form className="food-editor" onSubmit={saveFoodFacility}>
+                <div className="food-editor-heading">
+                  <div><span className="section-kicker">{editingFoodId === null ? "ADD FACILITY DETAILS" : "EDIT FACILITY DETAILS"}</span><h2>{editingFoodId === null ? "Add food & beverage information" : `Update ${foodForm.facility_type}`}</h2></div>
+                  {editingFoodId !== null && <button type="button" className="text-button" onClick={() => { setEditingFoodId(null); setFoodForm(emptyFoodForm()); }}>Cancel edit</button>}
+                </div>
+                <div className="field-grid">
+                  <Field label="Food facility" name="facility_type" as="select" options={FOOD_FACILITY_TYPES.filter((type) => editingFoodId !== null || !foodFacilities.some((facility) => facility.facility_type === type))} value={foodForm.facility_type} onChange={(event) => setFoodForm({ ...foodForm, facility_type: event.target.value })} required disabled={editingFoodId !== null} />
+                  {foodForm.facility_type !== "Drinking Water" && <>
+                    <Field label="Start time" name="start_time" type="time" value={foodForm.start_time} onChange={(event) => setFoodForm({ ...foodForm, start_time: event.target.value })} />
+                    <Field label="End time" name="end_time" type="time" value={foodForm.end_time} onChange={(event) => setFoodForm({ ...foodForm, end_time: event.target.value })} />
+                  </>}
+                  {!["Drinking Water"].includes(foodForm.facility_type) && <Field className="field-wide" label={foodForm.facility_type === "Tea Stall" || foodForm.facility_type === "Coffee Stall" || foodForm.facility_type === "Other Beverages" ? "Beverages provided" : "Food items provided"} name="items" as="textarea" rows="3" value={foodForm.items} onChange={(event) => setFoodForm({ ...foodForm, items: event.target.value })} placeholder="Enter items or beverages; use a new line for each" maxLength={2000} />}
+                  <Field label="Availability" name="availability" as="select" options={FOOD_AVAILABILITY_OPTIONS} value={foodForm.availability} onChange={(event) => setFoodForm({ ...foodForm, availability: event.target.value })} required />
+                  <Field label={foodForm.facility_type === "Drinking Water" ? "Water is" : "Free or paid"} name="price_status" as="select" options={FOOD_PRICE_OPTIONS} value={foodForm.price_status} onChange={(event) => setFoodForm({ ...foodForm, price_status: event.target.value, charges: event.target.value === "Paid" ? foodForm.charges : "" })} required />
+                  {foodForm.price_status === "Paid" && <Field label="Price / charges" name="charges" value={foodForm.charges} onChange={(event) => setFoodForm({ ...foodForm, charges: event.target.value })} placeholder="Enter the paid price" maxLength={100} required />}
+                  <Field className="field-wide" label={foodForm.facility_type === "Drinking Water" ? "Water station locations" : foodForm.facility_type?.includes("Stall") ? "Stall location" : "Food serving location"} name="location" as="textarea" rows="2" value={foodForm.location} onChange={(event) => setFoodForm({ ...foodForm, location: event.target.value })} placeholder={foodForm.facility_type === "Drinking Water" ? "Enter each water station location" : "e.g. Main dining hall"} maxLength={300} />
+                </div>
+                <button className="button button-primary button-small" type="submit" disabled={savingFood || !foodForm.facility_type}>{savingFood ? "Saving..." : editingFoodId === null ? "Save facility" : "Update facility"}</button>
+              </form>
+              <div className="food-admin-grid">
+                {FOOD_FACILITY_TYPES.map((type) => {
+                  const facility = foodFacilities.find((item) => item.facility_type === type);
+                  return (
+                    <article className="food-admin-card" key={type}>
+                      <div><span className="section-kicker">FOOD &amp; FACILITIES</span><h3>{type}</h3></div>
+                      {type !== "Drinking Water" && <p><b>Serving time:</b> {facility ? displayFoodTiming(facility) : "Not Announced Yet"}</p>}
+                      {type !== "Drinking Water" && <p className="food-card-items"><b>Items:</b> {facility?.items || "Not Announced Yet"}</p>}
+                      <p><b>Availability:</b> {facility?.availability || "Not Announced Yet"}</p>
+                      <p><b>Pricing:</b> {facility?.price_status === "Free" ? "FREE" : facility?.price_status === "Paid" ? `PAID · ${facility.charges || "Not Announced Yet"}` : "Not Announced Yet"}</p>
+                      <p><b>Location:</b> {facility?.location || "Not Announced Yet"}</p>
+                      <div className="food-admin-actions">
+                        {facility ? (
+                          <>
+                            <button type="button" className="details-button" onClick={() => editFoodFacility(facility)}>Edit</button>
+                            <button type="button" className="food-delete-button" onClick={() => deleteFoodFacility(facility)}>Delete</button>
+                          </>
+                        ) : (
+                          <button type="button" className="details-button" onClick={() => { setEditingFoodId(null); setFoodForm({ ...emptyFoodForm(), facility_type: type }); }}>Add details</button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+        </main>
+      )}
+
+      {page === "food" && (
+        <main className="food-page">
+          <div className="page-topline"><span className="section-kicker">PARTICIPANT INFORMATION</span><span className="food-updated-note">Details are updated by the organizers</span></div>
+          <div className="admin-title"><div><h1>Food <span>&amp; beverages.</span></h1><p>Organizer meal service, paid stalls, and drinking water information.</p></div></div>
+          <section className="food-public-section">
+            <div className="food-public-heading"><span className="section-kicker">MEALS</span><h2>Organizer meal service</h2><p>Complimentary meals are marked FREE. Paid meals show their price.</p></div>
+            <div className="food-public-grid">
+              {MEAL_FACILITY_TYPES.map((type) => {
+                const facility = foodFacilities.find((item) => item.facility_type === type) || { facility_type: type };
+                return <FoodFacilityCard key={type} facility={facility} kind="meal" />;
+              })}
+            </div>
+          </section>
+          <section className="food-public-section">
+            <div className="food-public-heading"><span className="section-kicker">STALLS &amp; BEVERAGES</span><h2>Tea &amp; coffee stalls</h2><p>Check stall availability, serving times, locations, and organizer-announced prices.</p></div>
+            <div className="food-public-grid">
+              <TeaCoffeeStallsCard
+                tea={foodFacilities.find((item) => item.facility_type === "Tea Stall")}
+                coffee={foodFacilities.find((item) => item.facility_type === "Coffee Stall")}
+                otherBeverages={foodFacilities.find((item) => item.facility_type === "Other Beverages")}
+              />
+            </div>
+          </section>
+          <section className="food-public-section">
+            <div className="food-public-heading"><span className="section-kicker">WATER</span><h2>Drinking water</h2></div>
+            <div className="food-public-grid">
+              <FoodFacilityCard facility={foodFacilities.find((item) => item.facility_type === "Drinking Water") || { facility_type: "Drinking Water" }} kind="water" />
+            </div>
+          </section>
         </main>
       )}
 
@@ -581,6 +867,7 @@ function App() {
 
       <footer className="site-footer"><a href="#home" className="brand footer-brand" onClick={(event) => { event.preventDefault(); navigate("home"); }}><span className="brand-mark"><Icon name="spark" size={18} /></span><span>hack<span className="brand-light">thefuture</span></span></a><span>MADE FOR THE BUILDERS OF TOMORROW.</span><span>© 2026 {eventName}</span></footer>
       {notice && page === "registration" && <div className="toast-note"><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
+      {user && createPortal(<Chatbot request={request} csrf={csrf} />, document.body)}
     </div>
   );
 }

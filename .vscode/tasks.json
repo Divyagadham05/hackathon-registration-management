@@ -1,0 +1,31 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start hackathon frontend",
+			"type": "shell",
+			"command": "npm.cmd",
+			"args": [
+				"--prefix",
+				"frontend",
+				"run",
+				"dev",
+				"--",
+				"--host",
+				"127.0.0.1"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start hackathon backend",
+			"type": "shell",
+			"command": "py",
+			"args": [
+				"backend\\app.py"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}
