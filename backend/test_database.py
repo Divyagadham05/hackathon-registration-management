@@ -220,12 +220,12 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
                     row[1] for row in connection.execute("PRAGMA table_info(food_facilities)")
                 }
                 saved = connection.execute(
-                    "SELECT timing, start_time, end_time, items FROM food_facilities WHERE facility_type = 'Lunch'"
+                    "SELECT timing, start_time, end_time, items, published FROM food_facilities WHERE facility_type = 'Lunch'"
                 ).fetchone()
             finally:
                 connection.close()
-            self.assertTrue({"start_time", "end_time", "items"}.issubset(columns))
-            self.assertEqual(saved, ("12:00 PM–1:00 PM", None, None, None))
+            self.assertTrue({"start_time", "end_time", "items", "published"}.issubset(columns))
+            self.assertEqual(saved, ("12:00 PM–1:00 PM", None, None, None, 0))
 
     def test_food_facilities_admin_crud_public_data_and_chatbot_answers(self):
         types = [
@@ -240,16 +240,7 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         ]
         public = self.client.get("/api/food-facilities")
         self.assertEqual(public.status_code, 200)
-        self.assertEqual(
-            [item["facility_type"] for item in public.get_json()["food_facilities"]],
-            types,
-        )
-        self.assertTrue(
-            all(
-                item["timing"] == "Not Announced Yet"
-                for item in public.get_json()["food_facilities"]
-            )
-        )
+        self.assertEqual(public.get_json()["food_facilities"], [])
         payload = {
             "facility_type": "Lunch",
             "start_time": "12:30",
@@ -259,6 +250,7 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
             "price_status": "Free",
             "charges": "",
             "location": "Main dining hall",
+            "published": False,
         }
         rejected = self.client.post(
             "/api/admin/food-facilities",
@@ -284,6 +276,8 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 201)
         facility_id = created.get_json()["food_facility"]["id"]
+        self.assertFalse(created.get_json()["food_facility"]["published"])
+        self.assertEqual(self.client.get("/api/food-facilities").get_json()["food_facilities"], [])
 
         duplicate = self.client.post(
             "/api/admin/food-facilities",
@@ -297,6 +291,7 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
             "start_time": "13:00",
             "end_time": "14:00",
             "items": "Rice, vegetables, and fruit",
+            "published": True,
         }
         updated = self.client.put(
             f"/api/admin/food-facilities/{facility_id}",
@@ -307,6 +302,13 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(
             updated.get_json()["food_facility"]["start_time"],
             "13:00",
+        )
+        self.assertEqual(
+            [
+                item["facility_type"]
+                for item in self.client.get("/api/food-facilities").get_json()["food_facilities"]
+            ],
+            ["Lunch"],
         )
 
         additional_facilities = [
@@ -395,7 +397,10 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(public_lunch["items"], "Rice, vegetables, and fruit")
         self.assertEqual(public_lunch["price_status"], "Free")
         self.assertEqual(public_lunch["location"], "Main dining hall")
-        self.assertEqual(len(self.client.get("/api/food-facilities").get_json()["food_facilities"]), 8)
+        self.assertEqual(
+            {item["facility_type"] for item in public_facilities},
+            set(types),
+        )
 
         with patch("app.get_chatbot_reply") as project_chat:
             answer = self.client.post(
@@ -404,7 +409,10 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
                 headers={"X-CSRF-Token": self.csrf},
             )
         self.assertEqual(answer.status_code, 200)
-        self.assertIn("Lunch timing: 1:00 PM–2:00 PM.", answer.get_json()["reply"])
+        self.assertEqual(
+            answer.get_json()["reply"],
+            "Lunch is scheduled from 1:00 PM to 2:00 PM.",
+        )
         project_chat.assert_not_called()
 
         tea_price = self.client.post(
@@ -418,14 +426,23 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
             json={"messages": [{"role": "user", "content": "Are breakfast and lunch complimentary?"}]},
             headers={"X-CSRF-Token": self.csrf},
         )
-        self.assertIn("Breakfast is FREE.", breakfast_price.get_json()["reply"])
-        self.assertIn("Lunch is FREE.", breakfast_price.get_json()["reply"])
+        self.assertIn(
+            "Yes! Breakfast is completely free for eligible participants.",
+            breakfast_price.get_json()["reply"],
+        )
+        self.assertIn(
+            "Yes! Lunch is completely free for eligible participants.",
+            breakfast_price.get_json()["reply"],
+        )
         breakfast_time = self.client.post(
             "/api/chat",
             json={"messages": [{"role": "user", "content": "What time is breakfast?"}]},
             headers={"X-CSRF-Token": self.csrf},
         )
-        self.assertIn("Breakfast timing: 8:00 AM–9:00 AM.", breakfast_time.get_json()["reply"])
+        self.assertEqual(
+            breakfast_time.get_json()["reply"],
+            "Breakfast is scheduled from 8:00 AM to 9:00 AM.",
+        )
         snacks = self.client.post(
             "/api/chat",
             json={"messages": [{"role": "user", "content": "What snacks are provided?"}]},
@@ -437,7 +454,10 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
             json={"messages": [{"role": "user", "content": "What time is dinner?"}]},
             headers={"X-CSRF-Token": self.csrf},
         )
-        self.assertIn("Dinner timing: 7:00 PM–8:00 PM.", dinner.get_json()["reply"])
+        self.assertEqual(
+            dinner.get_json()["reply"],
+            "Dinner is scheduled from 7:00 PM to 8:00 PM.",
+        )
         stalls = self.client.post(
             "/api/chat",
             json={"messages": [{"role": "user", "content": "Are tea and coffee stalls available?"}]},
@@ -450,7 +470,10 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
             json={"messages": [{"role": "user", "content": "Is drinking water free?"}]},
             headers={"X-CSRF-Token": self.csrf},
         )
-        self.assertIn("Drinking Water is FREE.", water.get_json()["reply"])
+        self.assertEqual(
+            water.get_json()["reply"],
+            "Yes! Drinking water is available throughout the event. 💧",
+        )
         counters = self.client.post(
             "/api/chat",
             json={"messages": [{"role": "user", "content": "Where are the food counters?"}]},
@@ -472,7 +495,7 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(unavailable.status_code, 200)
         self.assertEqual(
             unavailable.get_json()["reply"],
-            "Food information has not been announced yet. Please contact the event organizers.",
+            "Lunch is scheduled from 1:00 PM to 2:00 PM.",
         )
 
 

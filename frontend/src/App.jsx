@@ -22,7 +22,13 @@ const FOOD_FACILITY_TYPES = [
   "Other Beverages",
   "Drinking Water",
 ];
-const MEAL_FACILITY_TYPES = ["Breakfast", "Lunch", "Evening Snacks", "Dinner"];
+const OFFICIAL_FOOD_SCHEDULE = [
+  { facility_type: "Breakfast", icon: "🌅", details: "8:00 AM to 9:00 AM" },
+  { facility_type: "Lunch", icon: "☀️", details: "1:00 PM to 2:00 PM" },
+  { facility_type: "Evening Snacks", icon: "☕", details: "4:00 PM to 4:30 PM" },
+  { facility_type: "Dinner", icon: "🌙", details: "7:30 PM to 8:30 PM" },
+  { facility_type: "Drinking Water", icon: "💧", details: "Available throughout the event" },
+];
 const FOOD_AVAILABILITY_OPTIONS = ["Available", "Unavailable", "Not Announced Yet"];
 const FOOD_PRICE_OPTIONS = ["Free", "Paid", "Not Announced Yet"];
 
@@ -36,6 +42,7 @@ const emptyFoodForm = () => ({
   price_status: "Not Announced Yet",
   charges: "",
   location: "",
+  published: false,
 });
 
 function formatFoodTime(value) {
@@ -146,69 +153,6 @@ function Field({ label, name, value, onChange, error, required, hint, as = "inpu
       {hint && <span className="field-hint">{hint}</span>}
       {error && <span className="field-error">{error}</span>}
     </label>
-  );
-}
-
-function FoodFacilityCard({ facility, kind }) {
-  const isWater = kind === "water";
-  const timing = displayFoodTiming(facility);
-  const priceStatus = facility.price_status || "Not Announced Yet";
-  const priceLabel = priceStatus === "Free"
-    ? isWater || kind !== "meal" ? "FREE" : "FREE for registered participants"
-    : priceStatus === "Paid" ? "PAID" : priceStatus;
-  const rows = isWater
-    ? [
-        ["Drinking water", priceStatus === "Paid" && facility.charges ? `PAID · ${facility.charges}` : priceLabel],
-        ["Availability", facility.availability || "Not Announced Yet"],
-        ["Water station locations", facility.location || "Not Announced Yet"],
-      ]
-    : [
-        ["Serving time", timing],
-        ["Food items", facility.items || "Not Announced Yet"],
-        ["Price", priceStatus === "Paid" ? facility.charges || "Not Announced Yet" : priceLabel],
-        ["Serving location", facility.location || "Not Announced Yet"],
-      ];
-
-  return (
-    <article className="food-public-card">
-      <span className="food-card-mark" aria-hidden="true">✦</span>
-      <span className="section-kicker">{isWater ? "WATER STATION" : "ORGANIZER MEAL SERVICE"}</span>
-      <h2>{facility.facility_type === "Drinking Water" ? "Drinking Water" : facility.facility_type}</h2>
-      {!isWater && <span className={`food-price-badge ${priceStatus === "Free" ? "food-price-free" : priceStatus === "Paid" ? "food-price-paid" : ""}`}>{priceLabel}</span>}
-      <dl>
-        {rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
-      </dl>
-    </article>
-  );
-}
-
-function TeaCoffeeStallsCard({ tea, coffee, otherBeverages }) {
-  const price = (facility) => {
-    if (facility?.price_status === "Free") return "FREE";
-    if (facility?.price_status === "Paid") return `PAID${facility.charges ? ` · ${facility.charges}` : ""}`;
-    return "Not Announced Yet";
-  };
-  const value = (text) => text || "Not Announced Yet";
-  const rows = [
-    ["Tea serving time", tea ? displayFoodTiming(tea) : "Not Announced Yet"],
-    ["Tea stall availability", value(tea?.availability)],
-    ["Tea stall location", value(tea?.location)],
-    ["Tea price", price(tea)],
-    ["Coffee serving time", coffee ? displayFoodTiming(coffee) : "Not Announced Yet"],
-    ["Coffee stall availability", value(coffee?.availability)],
-    ["Coffee stall location", value(coffee?.location)],
-    ["Coffee price", price(coffee)],
-    ["Other beverages", value(otherBeverages?.items)],
-    ["Other beverage prices", price(otherBeverages)],
-  ];
-  return (
-    <article className="food-public-card food-stall-card">
-      <span className="food-card-mark" aria-hidden="true">✦</span>
-      <span className="section-kicker">STALLS &amp; BEVERAGES</span>
-      <h2>Tea &amp; Coffee Stalls</h2>
-      <p className="food-card-intro">Prices and payment status are set by organizers. Tea and coffee are not assumed to be complimentary.</p>
-      <dl>{rows.map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}</dl>
-    </article>
   );
 }
 
@@ -460,6 +404,7 @@ function App() {
       price_status: facility.price_status || "Not Announced Yet",
       charges: facility.charges || "",
       location: facility.location || "",
+      published: Boolean(facility.published),
     });
   }
 
@@ -724,7 +669,7 @@ function App() {
             <aside className="form-aside">
               <div className="aside-card aside-event"><span className="section-kicker">THE COUNTDOWN IS ON</span><div className="aside-date">01<span>—</span>02<small>NOV 2026</small></div><h3>{eventName}</h3><p>Innovation Hub<br />Main Campus</p><div className="aside-rule" /><div className="aside-line"><Icon name="clock" size={17} /> 24 hours of making</div><div className="aside-line"><Icon name="user" size={17} /> Open to all students</div></div>
               <div className="aside-card aside-tip"><div className="tip-icon"><Icon name="spark" size={18} /></div><h3>Good to know</h3><p>Your project idea doesn't need to be perfect. We want to hear what you're curious about — you can figure out the rest at the hackathon.</p></div>
-              <div className="help-note"><Icon name="mail" size={17} /><span>Need a hand? <a href="mailto:organizers@example.com">Contact the organizers</a></span></div>
+              <div className="help-note"><Icon name="mail" size={17} /><span>Organizer contact details have not been published on this website yet.</span></div>
             </aside>
           </div>
         </main>
@@ -799,7 +744,9 @@ function App() {
                   {foodForm.price_status === "Paid" && <Field label="Price / charges" name="charges" value={foodForm.charges} onChange={(event) => setFoodForm({ ...foodForm, charges: event.target.value })} placeholder="Enter the paid price" maxLength={100} required />}
                   <Field className="field-wide" label={foodForm.facility_type === "Drinking Water" ? "Water station locations" : foodForm.facility_type?.includes("Stall") ? "Stall location" : "Food serving location"} name="location" as="textarea" rows="2" value={foodForm.location} onChange={(event) => setFoodForm({ ...foodForm, location: event.target.value })} placeholder={foodForm.facility_type === "Drinking Water" ? "Enter each water station location" : "e.g. Main dining hall"} maxLength={300} />
                 </div>
-                <button className="button button-primary button-small" type="submit" disabled={savingFood || !foodForm.facility_type}>{savingFood ? "Saving..." : editingFoodId === null ? "Save facility" : "Update facility"}</button>
+                <label className="food-publish-toggle"><input type="checkbox" checked={foodForm.published} onChange={(event) => setFoodForm({ ...foodForm, published: event.target.checked })} /><span>Publish these details to participants and the assistant</span></label>
+                <p className="food-card-intro">Unpublished drafts are visible only in the organizer dashboard.</p>
+                <button className="button button-primary button-small" type="submit" disabled={savingFood || !foodForm.facility_type}>{savingFood ? "Saving..." : foodForm.published ? "Save & publish" : "Save draft"}</button>
               </form>
               <div className="food-admin-grid">
                 {FOOD_FACILITY_TYPES.map((type) => {
@@ -812,6 +759,7 @@ function App() {
                       <p><b>Availability:</b> {facility?.availability || "Not Announced Yet"}</p>
                       <p><b>Pricing:</b> {facility?.price_status === "Free" ? "FREE" : facility?.price_status === "Paid" ? `PAID · ${facility.charges || "Not Announced Yet"}` : "Not Announced Yet"}</p>
                       <p><b>Location:</b> {facility?.location || "Not Announced Yet"}</p>
+                      <p><b>Publication:</b> {facility?.published ? "Published to participants" : "Draft — not public"}</p>
                       <div className="food-admin-actions">
                         {facility ? (
                           <>
@@ -834,32 +782,32 @@ function App() {
       {page === "food" && (
         <main className="food-page">
           <div className="page-topline"><span className="section-kicker">PARTICIPANT INFORMATION</span><span className="food-updated-note">Details are updated by the organizers</span></div>
-          <div className="admin-title"><div><h1>Food <span>&amp; beverages.</span></h1><p>Organizer meal service, paid stalls, and drinking water information.</p></div></div>
-          <section className="food-public-section">
-            <div className="food-public-heading"><span className="section-kicker">MEALS</span><h2>Organizer meal service</h2><p>Complimentary meals are marked FREE. Paid meals show their price.</p></div>
-            <div className="food-public-grid">
-              {MEAL_FACILITY_TYPES.map((type) => {
-                const facility = foodFacilities.find((item) => item.facility_type === type) || { facility_type: type };
-                return <FoodFacilityCard key={type} facility={facility} kind="meal" />;
-              })}
-            </div>
-          </section>
-          <section className="food-public-section">
-            <div className="food-public-heading"><span className="section-kicker">STALLS &amp; BEVERAGES</span><h2>Tea &amp; coffee stalls</h2><p>Check stall availability, serving times, locations, and organizer-announced prices.</p></div>
-            <div className="food-public-grid">
-              <TeaCoffeeStallsCard
-                tea={foodFacilities.find((item) => item.facility_type === "Tea Stall")}
-                coffee={foodFacilities.find((item) => item.facility_type === "Coffee Stall")}
-                otherBeverages={foodFacilities.find((item) => item.facility_type === "Other Beverages")}
-              />
-            </div>
-          </section>
-          <section className="food-public-section">
-            <div className="food-public-heading"><span className="section-kicker">WATER</span><h2>Drinking water</h2></div>
-            <div className="food-public-grid">
-              <FoodFacilityCard facility={foodFacilities.find((item) => item.facility_type === "Drinking Water") || { facility_type: "Drinking Water" }} kind="water" />
-            </div>
-          </section>
+          <div className="admin-title"><div><h1>🍽️ Food <span>&amp; Facilities.</span></h1></div></div>
+          <p className="food-status-message">Food and drinking water facilities are available for participants.</p>
+          <p className="food-schedule-note">Official meal schedule for registered participants.</p>
+          <div className="food-schedule-list">
+            {OFFICIAL_FOOD_SCHEDULE.map((sample) => {
+              const publishedFacility = foodFacilities.find(
+                (facility) => facility.facility_type === sample.facility_type && facility.published,
+              );
+              const officialTiming = publishedFacility && sample.facility_type !== "Drinking Water"
+                ? displayFoodTiming(publishedFacility)
+                : "";
+              const details = sample.facility_type === "Drinking Water" && publishedFacility
+                ? publishedFacility.availability || sample.details
+                : officialTiming && officialTiming !== "Not Announced Yet"
+                  ? officialTiming
+                  : sample.details;
+
+              return (
+                <article className="food-schedule-row" key={sample.facility_type}>
+                  <span className="food-schedule-icon" aria-hidden="true">{sample.icon}</span>
+                  <h2>{sample.facility_type}</h2>
+                  <p>{details}</p>
+                </article>
+              );
+            })}
+          </div>
         </main>
       )}
 

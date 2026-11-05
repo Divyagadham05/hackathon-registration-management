@@ -47,5 +47,6 @@ CREATE TABLE IF NOT EXISTS food_facilities (
     price_status TEXT NOT NULL DEFAULT 'Not Announced Yet',
     charges TEXT,
     location TEXT,
+    published BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

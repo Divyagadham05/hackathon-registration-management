@@ -29,6 +29,21 @@ frontend/dist/
 # Local database
 backend/instance/
 
+# Virtual environments
+.venv/
+venv/
+**/.venv/
+**/venv/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Build output
+build/
+dist/
+
 frontend/dist/
 
 .env

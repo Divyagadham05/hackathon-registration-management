@@ -28,18 +28,30 @@ if __package__:
         ChatbotResponseError,
         get_chatbot_reply,
         get_food_facility_reply,
+        get_hackathon_faq_reply,
     )
     from .database import connect_database
-    from .project_knowledge import ProjectKnowledgeUnavailable
+    from .hackathon_knowledge import (
+        OUT_OF_SCOPE_REPLY,
+        UNKNOWN_INFO_REPLY,
+        is_hackathon_question,
+        retrieve_hackathon_context,
+    )
 else:
     from chatbot import (
         ChatbotNotConfigured,
         ChatbotResponseError,
         get_chatbot_reply,
         get_food_facility_reply,
+        get_hackathon_faq_reply,
     )
     from database import connect_database
-    from project_knowledge import ProjectKnowledgeUnavailable
+    from hackathon_knowledge import (
+        OUT_OF_SCOPE_REPLY,
+        UNKNOWN_INFO_REPLY,
+        is_hackathon_question,
+        retrieve_hackathon_context,
+    )
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -152,6 +164,11 @@ def create_app():
         for column in ("start_time", "end_time", "items"):
             if column not in food_columns:
                 db.execute(f"ALTER TABLE food_facilities ADD COLUMN {column} TEXT")
+        if "published" not in food_columns:
+            default = "FALSE" if app.config["DATABASE_TYPE"] == "postgres" else "0"
+            db.execute(
+                f"ALTER TABLE food_facilities ADD COLUMN published BOOLEAN NOT NULL DEFAULT {default}"
+            )
         admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
         admin_password = os.environ.get("ADMIN_PASSWORD", "")
         if admin_email and admin_password:
@@ -229,10 +246,12 @@ def create_app():
                 "price_status": None,
                 "charges": None,
                 "location": None,
+                "published": False,
                 "updated_at": None,
             }
         else:
             result = dict(row)
+            result["published"] = bool(result.get("published"))
         if public:
             result["timing"] = result["timing"] or "Not Announced Yet"
             result["start_time"] = result["start_time"] or "Not Announced Yet"
@@ -245,6 +264,15 @@ def create_app():
             )
             result["location"] = result["location"] or "Not Announced Yet"
         return result
+
+    def food_facility_is_published(row):
+        if not bool(row["published"]):
+            return False
+        for field in ("timing", "start_time", "end_time", "items", "charges", "location"):
+            value = row[field]
+            if isinstance(value, str) and value.strip() and value.strip().casefold() != "not announced yet":
+                return True
+        return row["availability"] in {"Available", "Unavailable"} or row["price_status"] in {"Free", "Paid"}
 
     def validate_food_facility(data):
         if not isinstance(data, dict):
@@ -289,6 +317,9 @@ def create_app():
         price_status = data.get("price_status")
         if not isinstance(price_status, str) or price_status not in FOOD_PRICE_OPTIONS:
             field_errors["price_status"] = "Choose a valid free/paid status."
+        published = data.get("published", True)
+        if type(published) is not bool:
+            field_errors["published"] = "Choose whether to publish this facility."
         charges = values.get("charges")
         if price_status == "Paid" and not charges:
             field_errors["charges"] = "Enter the price for a paid facility."
@@ -300,6 +331,7 @@ def create_app():
             facility_type=facility_type,
             availability=availability,
             price_status=price_status,
+            published=published,
         )
         return values, None
 
@@ -651,15 +683,11 @@ Hackathon Organizing Team
         rows = get_db().execute(
             "SELECT * FROM food_facilities ORDER BY id"
         ).fetchall()
-        stored = {
-            row["facility_type"]: row
+        facilities = [
+            food_facility_dict(row, public=True)
             for row in rows
-        }
-        facilities = []
-        for facility_type in FOOD_FACILITY_TYPES:
-            item = food_facility_dict(stored.get(facility_type), public=True)
-            item["facility_type"] = facility_type
-            facilities.append(item)
+            if food_facility_is_published(row)
+        ]
         return jsonify({"food_facilities": facilities})
 
     @app.get("/api/admin/food-facilities")
@@ -688,8 +716,8 @@ Hackathon Organizing Team
             cursor = db.execute(
                 """INSERT INTO food_facilities
                    (facility_type, timing, start_time, end_time, items, availability,
-                    price_status, charges, location)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
+                    price_status, charges, location, published)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
                 (
                     values["facility_type"],
                     values["timing"],
@@ -700,6 +728,7 @@ Hackathon Organizing Team
                     values["price_status"],
                     values["charges"],
                     values["location"],
+                    values["published"],
                 ),
             )
             facility_id = cursor.fetchone()["id"]
@@ -730,6 +759,7 @@ Hackathon Organizing Team
                 """UPDATE food_facilities
                    SET facility_type = ?, timing = ?, start_time = ?, end_time = ?, items = ?,
                        availability = ?, price_status = ?, charges = ?, location = ?,
+                       published = ?,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
                 (
@@ -742,6 +772,7 @@ Hackathon Organizing Team
                     values["price_status"],
                     values["charges"],
                     values["location"],
+                    values["published"],
                     facility_id,
                 ),
             )
@@ -869,35 +900,38 @@ Hackathon Organizing Team
             response.headers["Retry-After"] = "60"
             return response, status
 
+        question = validated_messages[-1]["content"]
+        if not is_hackathon_question(question):
+            return jsonify({"reply": OUT_OF_SCOPE_REPLY})
+
         food_rows = get_db().execute(
             "SELECT * FROM food_facilities ORDER BY id"
         ).fetchall()
-        stored_food = {
-            row["facility_type"]: food_facility_dict(row, public=True)
+        food_facilities = [
+            food_facility_dict(row, public=True)
             for row in food_rows
-        }
-        food_facilities = []
-        for facility_type in FOOD_FACILITY_TYPES:
-            item = stored_food.get(facility_type)
-            if item is None:
-                item = food_facility_dict(None, public=True)
-                item["facility_type"] = facility_type
-            food_facilities.append(item)
+            if food_facility_is_published(row)
+        ]
+        faq_reply = get_hackathon_faq_reply(question, food_facilities)
+        if faq_reply is not None:
+            return jsonify({"reply": faq_reply})
+
         food_reply = get_food_facility_reply(validated_messages, food_facilities)
         if food_reply is not None:
             return jsonify({"reply": food_reply})
+        knowledge_context = retrieve_hackathon_context(question, food_facilities)
+        if not knowledge_context or "Relevant FAQ entries:" not in knowledge_context:
+            return jsonify({"reply": UNKNOWN_INFO_REPLY})
 
         try:
             reply = get_chatbot_reply(
                 validated_messages,
                 os.environ.get("HACKATHON_NAME", "Hack the Future"),
+                knowledge_context,
             )
         except ChatbotNotConfigured:
             app.logger.error("Groq chatbot is unavailable because GROQ_API_KEY is not configured.")
             return error("The chat assistant is not configured yet. Please contact the organizer.", 503)
-        except ProjectKnowledgeUnavailable:
-            app.logger.exception("The chatbot could not retrieve project knowledge.")
-            return error("Project information is temporarily unavailable. Please try again.", 503)
         except ChatbotResponseError:
             app.logger.error("Groq chatbot returned an empty or invalid response.")
             return error("The chat assistant could not create a reply. Please try again.", 502)

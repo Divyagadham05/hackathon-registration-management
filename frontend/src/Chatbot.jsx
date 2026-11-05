@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from "react";
 
 const INITIAL_MESSAGE = {
   role: "assistant",
-  content: "Hi! Ask me about this website, its features, or how the registration system works.",
+  content: "Hi! I'm your Hackathon Website Assistant. Ask me about the event, registration, login, or officially announced facilities.",
 };
 const SUGGESTED_QUESTIONS = [
-  "Explain this project.",
-  "How does registration work?",
-  "Explain the login system.",
-  "What technologies are used?",
-  "Explain the backend architecture.",
+  "What is this hackathon?",
+  "How do I register?",
+  "How do I log in?",
+  "Is lunch free?",
+  "What facilities are announced?",
 ];
 
 function Chatbot({ csrf, request: requestApi }) {
@@ -67,14 +67,14 @@ function Chatbot({ csrf, request: requestApi }) {
           <header className="chat-header">
             <div>
               <span className="chat-header-kicker">HACK THE FUTURE</span>
-              <h2>Project assistant</h2>
+              <h2>Hackathon Website Assistant</h2>
             </div>
             <div className="chat-header-actions">
               <button type="button" className="chat-clear" onClick={clearChat} disabled={busy}>Clear chat</button>
               <button type="button" className="chat-close" aria-label="Close chat" onClick={() => setOpen(false)}>×</button>
             </div>
           </header>
-          <p className="chat-privacy-note">Ask about this project. Messages go to Groq; don’t share passwords or private information.</p>
+          <p className="chat-privacy-note">Some website questions may be sent to Groq. Don’t share passwords or private information.</p>
           <div className="chat-messages" ref={messagesRef} aria-live="polite">
             {messages.map((message, index) => (
               <p className={`chat-message chat-message-${message.role}`} key={`${index}-${message.role}`}>

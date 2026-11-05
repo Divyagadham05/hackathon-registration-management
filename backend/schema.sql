@@ -47,5 +47,6 @@ CREATE TABLE IF NOT EXISTS food_facilities (
     price_status TEXT NOT NULL DEFAULT 'Not Announced Yet',
     charges TEXT,
     location TEXT,
+    published INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
