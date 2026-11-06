@@ -177,6 +177,31 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         self.assertEqual(logged_in.status_code, 200)
         self.assertEqual(logged_in.get_json()["user"]["email"], "smoke@example.invalid")
 
+    def test_json_array_bodies_return_validation_errors(self):
+        with self.app.app_context():
+            database = self.app.get_db()
+            database.execute(
+                "UPDATE users SET is_admin = TRUE WHERE email = ?",
+                ("smoke@example.invalid",),
+            )
+            database.commit()
+
+        requests = (
+            ("post", "/api/signup"),
+            ("post", "/api/login"),
+            ("post", "/api/registration"),
+            ("patch", "/api/admin/registrations/HACK-NOTFOUND"),
+        )
+        for method, path in requests:
+            with self.subTest(path=path):
+                response = getattr(self.client, method)(
+                    path,
+                    json=["unexpected"],
+                    headers={"X-CSRF-Token": self.csrf},
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("error", response.get_json())
+
     def test_existing_food_facility_table_is_migrated_without_losing_data(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "legacy-food.db"

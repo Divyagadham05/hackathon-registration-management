@@ -369,7 +369,9 @@ def create_app():
         csrf_error = require_csrf()
         if csrf_error:
             return csrf_error
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error("Provide valid request details.", 400)
         name = str(data.get("full_name", "")).strip()
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
@@ -411,7 +413,9 @@ def create_app():
         csrf_error = require_csrf()
         if csrf_error:
             return csrf_error
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error("Provide valid request details.", 400)
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
         user = get_db().execute(
@@ -614,7 +618,9 @@ Hackathon Organizing Team
         csrf_error = require_csrf()
         if csrf_error:
             return csrf_error
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error("Provide valid request details.", 400)
         problems, values = validate_registration(data, user["email"])
         if problems:
             return error("Please correct the highlighted fields.", field_errors=problems)
@@ -842,7 +848,9 @@ Hackathon Organizing Team
         csrf_error = require_csrf()
         if csrf_error:
             return csrf_error
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error("Provide valid request details.", 400)
         status = data.get("status")
         if not isinstance(status, str) or status not in STATUSES:
             return error("Choose a valid registration status.")

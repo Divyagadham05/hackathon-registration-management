@@ -20,7 +20,7 @@
 		{
 			"label": "Start hackathon backend",
 			"type": "shell",
-			"command": "py",
+			"command": "${workspaceFolder}\\backend\\.venv\\Scripts\\python.exe",
 			"args": [
 				"backend\\app.py"
 			],

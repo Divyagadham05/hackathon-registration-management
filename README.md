@@ -32,7 +32,7 @@ A responsive React application backed by a Flask API. Local development uses SQL
    Copy-Item .env.example .env
    ```
 
-3. Edit `backend/.env`. Set `SECRET_KEY` to a long, random value (for example, generate one with `py -c "import secrets; print(secrets.token_hex(32))"`). To use the organizer dashboard, set `ADMIN_EMAIL` and `ADMIN_PASSWORD`; the admin password must be at least 12 characters. For the AI assistant, add your Groq key as `GROQ_API_KEY` in this local `.env` file. The default model is `openai/gpt-oss-20b`; only set `GROQ_MODEL` if you choose a model currently available to your Groq account. Never put the key in React code, commit it, or share it in chat. The assistant is available only to signed-in users. For local testing you may leave SMTP blank; registration will still be saved and the confirmation page will explain that email is not configured.
+3. Edit `backend/.env`. Set `SECRET_KEY` to a long, random value (for example, generate one with `py -c "import secrets; print(secrets.token_hex(32))"`). To use the organizer dashboard, set `ADMIN_EMAIL` and `ADMIN_PASSWORD`; the admin password must be at least 12 characters. For the AI assistant, add your Groq key as `GROQ_API_KEY` in this local `.env` file. The default model is `openai/gpt-oss-120b`; only set `GROQ_MODEL` if you choose a model currently available to your Groq account. Never put the key in React code, commit it, or share it in chat. The assistant is available only to signed-in users. For local testing you may leave SMTP blank; registration will still be saved and the confirmation page will explain that email is not configured.
 4. In the `backend` directory, start Flask:
 
    ```powershell
