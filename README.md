@@ -9,7 +9,7 @@ A responsive React application backed by a Flask API. Local development uses SQL
 - `backend/database.py` — database connection adapter for local SQLite and hosted PostgreSQL.
 - `backend/schema_postgres.sql` — PostgreSQL schema initialized by the Flask app when `DATABASE_URL` is set.
 - `render.yaml` — Render web service configuration for the Flask API.
-- `frontend/vercel.json` — same-origin `/api/*` rewrite from Vercel to the Render API.
+- `frontend/api/[...path].js` — same-origin Vercel function that forwards `/api/*` requests to the Flask API.
 - `backend/chatbot.py` — Groq-powered assistant reply generation and sensitive-value redaction.
 - `backend/hackathon_knowledge.py` — Categorized, hackathon-only context retrieval and topic filtering for the assistant.
 - `backend/hackathon_faq.py` — Structured FAQ entries, question variations, typo-tolerant matching, and official answers.
@@ -62,19 +62,21 @@ A responsive React application backed by a Flask API. Local development uses SQL
 
 ## Production deployment (Vercel + Render + PostgreSQL)
 
-The Vercel deployment serves only the static React/Vite frontend. Render runs Flask and connects it to managed PostgreSQL. The Vercel rewrite forwards `/api/*` to Render while keeping requests same-origin in the browser, so the existing session cookie and CSRF flow works without exposing database credentials or requiring cross-origin cookies. The Vite proxy is for local development only.
+Vercel serves the React/Vite frontend and a small same-origin API proxy. Render runs Flask and connects it to managed PostgreSQL. The proxy forwards `/api/*` to the backend URL configured in Vercel, preserving the session cookie and CSRF flow without exposing database credentials or requiring cross-origin cookies. The Vite proxy is for local development only.
 
 ### Render backend and database
 
-1. Push this repository to GitHub and create a persistent PostgreSQL database in Render. Choose a production-capable plan (not a temporary/expiring database) and use the same region for the database and web service.
-2. In Render, create a Blueprint from the repository using the root `render.yaml`. The Flask web service is named `hackathon-registration-api`; its build and Gunicorn start commands are configured there.
-3. Set the web service's `DATABASE_URL` to the database's **internal** connection URL in Render. Do not put this URL in the repository or Vercel. The app creates its PostgreSQL tables on startup.
-4. The Blueprint generates `SECRET_KEY` and enables secure session cookies for HTTPS. In the Render service's environment settings, add the following as needed:
+1. Push this repository to GitHub and create a PostgreSQL database. The free web service has an ephemeral filesystem, so local SQLite data is not durable; use a PostgreSQL database for production registrations. Check the database provider's current free-tier limits and retention policy.
+2. In Render, create a Blueprint from the repository using the root `render.yaml`. It configures the `hackathon-registration-api` Python web service on the free plan, with `backend` as its root directory, `pip install -r requirements.txt` as its build command, Gunicorn bound to Render's `$PORT`, and `/api/config` as its health check.
+3. Set the web service's `DATABASE_URL` to the PostgreSQL connection URL in Render. Prefer the database's internal URL when it is on Render in the same region. Do not put this URL in the repository or Vercel. The app creates its PostgreSQL tables on startup.
+4. The Blueprint generates `SECRET_KEY` and enables secure session cookies for HTTPS. These are the backend environment variables:
+   - Required: `DATABASE_URL`, `SECRET_KEY`, and `SESSION_COOKIE_SECURE=true` (the Blueprint sets `SECRET_KEY` and `SESSION_COOKIE_SECURE`).
    - `ADMIN_EMAIL` and `ADMIN_PASSWORD` to provision the organizer account. Use a unique password of at least 12 characters.
-   - `GROQ_API_KEY` and optionally `GROQ_MODEL` for the AI FAQ chatbot.
-   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, and optionally `SMTP_USE_SSL` for registration confirmation email.
-   - Optionally `HACKATHON_NAME` to customize the event name.
-5. Deploy and wait for Render's health check at `/api/config` to succeed. Its default service URL should be `https://hackathon-registration-api.onrender.com`.
+   - Optional chatbot settings: `GROQ_API_KEY` and `GROQ_MODEL`.
+   - Optional email settings: `SMTP_HOST`, `SMTP_PORT` (defaults to `587`), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, and `SMTP_USE_SSL` (defaults to `false`).
+   - Optional display setting: `HACKATHON_NAME`.
+   - `PORT` is assigned by Render; do not set it yourself. `PYTHON_VERSION` is set to `3.13.4` in the Blueprint. `DATABASE_PATH` (default `instance/hackathon.db`) and `FLASK_DEBUG` (default `false`) are local-development settings, not production settings.
+5. Deploy the service from this repository and wait for Render's `/api/config` health check to succeed. The Blueprint service URL is normally `https://hackathon-registration-api.onrender.com`; use the actual URL shown in the Render dashboard.
 
 All keys and passwords belong only in Render's environment settings. The Groq chatbot and email features remain optional; the rest of the application works without those credentials.
 
@@ -82,12 +84,15 @@ All keys and passwords belong only in Render's environment settings. The Groq ch
 
 1. Import the same GitHub repository into Vercel and set **Root Directory** to `frontend`.
 2. Use the Vite defaults: install `npm install` (or `npm ci`), build `npm run build`, output directory `dist`.
-3. `frontend/vercel.json` forwards `/api/*` to `https://hackathon-registration-api.onrender.com`. If Render assigned your service a different hostname, update the rewrite destination to that exact HTTPS URL and redeploy Vercel.
-4. No `VITE_*` API URL, secret, database password, `SECRET_KEY`, or Groq key is needed in Vercel. The frontend keeps using relative `/api/...` URLs; Vercel proxies them to Flask.
+3. In **Vercel → Settings → Environment Variables**, set `API_BACKEND_URL` to the Render backend's HTTPS origin, for example `https://hackathon-registration-api.onrender.com` (no path suffix). Add it for Production and any Preview environments you use.
+4. No database URL, `SECRET_KEY`, admin password, Groq key, or `VITE_*` API URL belongs in Vercel. The browser continues to call relative `/api/...` routes; the Vercel function proxies those requests to Flask. Since requests go to Vercel first, the browser sees same-origin requests and no `FRONTEND_URL`/CORS setting is required.
+5. Redeploy the Vercel frontend after setting or changing `API_BACKEND_URL`.
 
 ### Deployment checks and data
 
-- Visit `https://<your-render-service>.onrender.com/api/config` to confirm the backend is healthy, then open the Vercel URL and exercise signup, login, registration, and the organizer dashboard.
+- After deploying the backend, check `https://<your-render-service>.onrender.com/api/config`, `/api/auth`, and `/api/csrf`; each GET should return HTTP 200. `/api/auth` returns `{"user":null}` when signed out; `/api/csrf` also sets a session cookie.
+- If the Render root page works but these API routes return 404, Render is serving an old or different app. Confirm the service uses this repository and `backend` as its root directory, then deploy the latest commit. The Blueprint's `/api/config` health check should fail instead of treating that old app as healthy.
+- After setting `API_BACKEND_URL` and redeploying Vercel, check the same three paths on the Vercel domain. They should return HTTP 200 before testing signup, login, registration, and the organizer dashboard.
 - The hosted PostgreSQL database starts empty. The ignored local `backend/instance/hackathon.db` is not uploaded or migrated automatically; keep it private and request a migration plan if its existing records must be transferred.
 - This repository implements signed Flask sessions and CSRF protection, not JWT. That existing authentication is intentionally preserved.
 - Render's one-worker Gunicorn configuration preserves the current in-memory chatbot rate limit behavior. If you later scale to multiple backend instances, move rate limiting to shared storage or the hosting edge.
@@ -99,6 +104,23 @@ All keys and passwords belong only in Render's environment settings. The Groq ch
 - `GET /api/registration`, `POST /api/registration`
 - `POST /api/chat` (signed-in session and CSRF token required)
 - `GET /api/admin/registrations`, `PATCH /api/admin/registrations/<registration_id>`, `GET /api/admin/export.csv`
+
+### Redeploy and verify (PowerShell)
+
+1. Push the changes to the Git branch connected to Render and Vercel.
+2. In Render, confirm the backend service root directory is `backend`, then choose **Manual Deploy → Deploy latest commit**. Wait until the `/api/config` health check passes.
+3. In Vercel, set `API_BACKEND_URL` to the backend's HTTPS origin, then choose **Deployments → Redeploy** for the latest frontend commit.
+4. Run this against the Vercel domain. Each result should be `200`:
+
+   ```powershell
+   $base = "https://hackathon-registration-management.vercel.app"
+   foreach ($route in @("/api/auth", "/api/config", "/api/csrf")) {
+     $response = Invoke-WebRequest -Uri "$base$route" -UseBasicParsing
+     "$($response.StatusCode) $route"
+   }
+   ```
+
+The app now shows the backend's useful error response for API failures, identifies missing routes as deployment/routing issues, and reports network failures separately instead of displaying a generic error.
 
 ## Run chatbot tests
 

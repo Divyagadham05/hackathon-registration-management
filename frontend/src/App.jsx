@@ -88,19 +88,35 @@ const emptyForm = (user) => ({
 });
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  const payload = response.headers.get("content-type")?.includes("application/json")
-    ? await response.json()
-    : null;
+  let response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...options,
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+  } catch {
+    throw new Error("Could not reach the application server. Check your connection and try again.");
+  }
+
+  let payload = null;
+  if (response.headers.get("content-type")?.includes("application/json")) {
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`The application server returned an invalid response (HTTP ${response.status}).`);
+    }
+  }
   if (!response.ok) {
-    const error = new Error(payload?.error || "Something went wrong. Please try again.");
+    const message = payload?.error || (
+      response.status === 404
+        ? "The API route was not found. Check that the backend is deployed and API_BACKEND_URL is correct."
+        : `The request failed (HTTP ${response.status}). Please try again.`
+    );
+    const error = new Error(message);
     error.fieldErrors = payload?.field_errors || {};
     error.status = response.status;
     throw error;
