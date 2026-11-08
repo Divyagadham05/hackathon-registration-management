@@ -57,7 +57,7 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error("API proxy request failed:", error);
     return res.status(502).json({
-      error: "The application server could not be reached. Please try again later.",
+      error: "The backend is starting up or temporarily unavailable. Please retry in a few seconds.",
     });
   }
 }

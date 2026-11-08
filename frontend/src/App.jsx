@@ -112,9 +112,11 @@ async function request(path, options = {}) {
   }
   if (!response.ok) {
     const message = payload?.error || (
-      response.status === 404
-        ? "The API route was not found. Check that the backend is deployed and API_BACKEND_URL is correct."
-        : `The request failed (HTTP ${response.status}). Please try again.`
+      [502, 503, 504].includes(response.status)
+        ? "The backend is starting up or temporarily unavailable. Please retry in a few seconds."
+        : response.status === 404
+          ? "The API route was not found. Check that the backend is deployed and API_BACKEND_URL is correct."
+          : `The request failed (HTTP ${response.status}). Please try again.`
     );
     const error = new Error(message);
     error.fieldErrors = payload?.field_errors || {};
