@@ -32,6 +32,16 @@ const OFFICIAL_FOOD_SCHEDULE = [
 const FOOD_AVAILABILITY_OPTIONS = ["Available", "Unavailable", "Not Announced Yet"];
 const FOOD_PRICE_OPTIONS = ["Free", "Paid", "Not Announced Yet"];
 
+function getTrackSlugFromHash() {
+  const match = window.location.hash.match(/^#\/tracks\/([^/]+)$/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 const emptyFoodForm = () => ({
   facility_type: "",
   timing: "",
@@ -43,6 +53,21 @@ const emptyFoodForm = () => ({
   charges: "",
   location: "",
   published: false,
+});
+
+const emptyTrackForm = () => ({
+  slug: "",
+  number: "",
+  title: "",
+  tagline: "",
+  description: "",
+  color_class: "track-purple",
+  problem_statements: "",
+  suggested_tech: "",
+  resources: "",
+  sort_order: 0,
+  published: false,
+  registration_domain: "Other",
 });
 
 function formatFoodTime(value) {
@@ -98,7 +123,10 @@ async function request(path, options = {}) {
         ...(options.headers || {}),
       },
     });
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("The assistant is taking longer than usual to respond. Please retry in a moment.");
+    }
     throw new Error("Could not reach the application server. Check your connection and try again.");
   }
 
@@ -178,7 +206,15 @@ function App() {
   const [user, setUser] = useState(null);
   const [csrf, setCsrf] = useState("");
   const [eventName, setEventName] = useState("Hack the Future");
-  const [page, setPage] = useState("home");
+  const [page, setPage] = useState(() => getTrackSlugFromHash() ? "track" : "home");
+  const [trackSlug, setTrackSlug] = useState(getTrackSlugFromHash);
+  const [tracks, setTracks] = useState([]);
+  const [tracksLoading, setTracksLoading] = useState(true);
+  const [tracksError, setTracksError] = useState("");
+  const [activeTrack, setActiveTrack] = useState(null);
+  const [trackDetailState, setTrackDetailState] = useState("idle");
+  const [trackDetailError, setTrackDetailError] = useState("");
+  const [pendingRegistrationDomain, setPendingRegistrationDomain] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ full_name: "", email: "", password: "" });
   const [form, setForm] = useState(emptyForm(null));
@@ -196,7 +232,30 @@ function App() {
   const [foodForm, setFoodForm] = useState(emptyFoodForm);
   const [editingFoodId, setEditingFoodId] = useState(null);
   const [savingFood, setSavingFood] = useState(false);
+  const [adminTracks, setAdminTracks] = useState([]);
+  const [trackForm, setTrackForm] = useState(emptyTrackForm);
+  const [editingTrackId, setEditingTrackId] = useState(null);
+  const [savingTrack, setSavingTrack] = useState(false);
   const [selectedRegistration, setSelectedRegistration] = useState(null);
+  const [knowledgeDocuments, setKnowledgeDocuments] = useState([]);
+  const [knowledgeGaps, setKnowledgeGaps] = useState([]);
+  const [knowledgeStatus, setKnowledgeStatus] = useState(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState("");
+  const [knowledgeSearch, setKnowledgeSearch] = useState("");
+  const [knowledgeOrigin, setKnowledgeOrigin] = useState("");
+  const [knowledgeForm, setKnowledgeForm] = useState({ title: "", content: "", published: true });
+  const [editingKnowledgeId, setEditingKnowledgeId] = useState(null);
+  const [savingKnowledge, setSavingKnowledge] = useState(false);
+  const [knowledgeFieldErrors, setKnowledgeFieldErrors] = useState({});
+  const [knowledgeMessage, setKnowledgeMessage] = useState("");
+  const [knowledgeChunksDocument, setKnowledgeChunksDocument] = useState(null);
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [knowledgeMode, setKnowledgeMode] = useState("hybrid");
+  const [knowledgeResults, setKnowledgeResults] = useState([]);
+  const [knowledgeSearchLoading, setKnowledgeSearchLoading] = useState(false);
+  const [knowledgeSearchError, setKnowledgeSearchError] = useState("");
+  const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
@@ -211,15 +270,102 @@ function App() {
       .finally(() => setAuthReady(true));
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    request("/api/tracks")
+      .then((response) => {
+        if (active) setTracks(response.tracks);
+      })
+      .catch((error) => {
+        if (active) setTracksError(error.message);
+      })
+      .finally(() => {
+        if (active) setTracksLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const slug = getTrackSlugFromHash();
+      if (slug) {
+        setTrackSlug(slug);
+        setPage("track");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
+      setTrackSlug(null);
+      if (window.location.hash === "#tracks" || window.location.hash === "#about") {
+        setPage("home");
+        const sectionId = window.location.hash.slice(1);
+        window.requestAnimationFrame(() => {
+          document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth" });
+        });
+      } else {
+        setPage((current) => current === "track" ? "home" : current);
+      }
+    };
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (!trackSlug) {
+      setActiveTrack(null);
+      setTrackDetailState("idle");
+      setTrackDetailError("");
+      return;
+    }
+    let active = true;
+    setTrackDetailState("loading");
+    setTrackDetailError("");
+    request(`/api/tracks/${encodeURIComponent(trackSlug)}`)
+      .then((response) => {
+        if (!active) return;
+        setActiveTrack(response.track);
+        setTrackDetailState("loaded");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setActiveTrack(null);
+        setTrackDetailState(error.status === 404 ? "not-found" : "error");
+        if (error.status !== 404) setTrackDetailError(error.message);
+      });
+    return () => { active = false; };
+  }, [trackSlug]);
+
   const activeInitials = useMemo(() => user?.full_name?.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "H", [user]);
 
   function navigate(nextPage) {
+    if (window.location.hash.startsWith("#/tracks/") && nextPage !== "track") {
+      window.location.hash = "";
+    }
     setErrorMessage("");
     setNotice("");
     setFieldErrors({});
     setMobileMenu(false);
     setPage(nextPage);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openTrack(track) {
+    const hash = `#/tracks/${encodeURIComponent(track.slug)}`;
+    if (window.location.hash === hash) {
+      setTrackSlug(track.slug);
+      setPage("track");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      window.location.hash = hash;
+    }
+  }
+
+  function backToTracks() {
+    if (window.location.hash === "#tracks") {
+      setPage("home");
+      document.getElementById("tracks")?.scrollIntoView({ behavior: "smooth" });
+    } else {
+      window.location.hash = "tracks";
+    }
   }
 
   function updateForm(event) {
@@ -260,7 +406,8 @@ function App() {
       });
       setUser(response.user);
       if (response.csrf_token) setCsrf(response.csrf_token);
-      setForm(emptyForm(response.user));
+      setForm({ ...emptyForm(response.user), domain: pendingRegistrationDomain });
+      setPendingRegistrationDomain("");
       navigate("registration");
     } catch (error) {
       setErrorMessage(error.message);
@@ -270,7 +417,9 @@ function App() {
     }
   }
 
-  async function openRegistration() {
+  async function openRegistration(trackDomain = "") {
+    const registrationDomain = typeof trackDomain === "string" ? trackDomain : "";
+    setPendingRegistrationDomain(registrationDomain);
     if (!user) {
       setAuthMode("signup");
       navigate("auth");
@@ -287,7 +436,7 @@ function App() {
         navigate("success");
         setNotice(response.registration.email_notice || "");
       } else {
-        setForm(emptyForm(user));
+        setForm({ ...emptyForm(user), domain: registrationDomain });
         navigate("registration");
       }
     } catch (error) {
@@ -367,18 +516,236 @@ function App() {
     setBusy(true);
     try {
       const params = new URLSearchParams(Object.entries(adminFilters).filter(([, value]) => value));
-      const [registrationResponse, foodResponse] = await Promise.all([
+      const [registrationResponse, foodResponse, trackResponse] = await Promise.all([
         request(`/api/admin/registrations?${params}`),
         request("/api/admin/food-facilities"),
+        request("/api/admin/tracks"),
       ]);
       setAdminRows(registrationResponse.registrations);
       setFoodFacilities(foodResponse.food_facilities);
+      setAdminTracks(trackResponse.tracks);
       setAdminSection("registrations");
       navigate("admin");
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loadKnowledgeDocuments(search = knowledgeSearch, origin = knowledgeOrigin) {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set("q", search.trim());
+    if (origin) params.set("origin", origin);
+    const response = await request(`/api/admin/knowledge/documents?${params}`);
+    setKnowledgeDocuments(response.documents);
+  }
+
+  async function loadKnowledge() {
+    setKnowledgeLoading(true);
+    setKnowledgeError("");
+    try {
+      const [statusResponse, documentResponse, gapResponse] = await Promise.all([
+        request("/api/admin/knowledge/status"),
+        request("/api/admin/knowledge/documents"),
+        request("/api/admin/knowledge/gaps"),
+      ]);
+      setKnowledgeStatus(statusResponse);
+      setKnowledgeDocuments(documentResponse.documents);
+      setKnowledgeGaps(gapResponse.gaps);
+    } catch (error) {
+      setKnowledgeError(error.message);
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }
+
+  async function refreshKnowledge() {
+    try {
+      const [statusResponse, gapResponse] = await Promise.all([
+        request("/api/admin/knowledge/status"),
+        request("/api/admin/knowledge/gaps"),
+      ]);
+      setKnowledgeStatus(statusResponse);
+      setKnowledgeGaps(gapResponse.gaps);
+      await loadKnowledgeDocuments();
+      setKnowledgeError("");
+    } catch (error) {
+      setKnowledgeError(error.message);
+    }
+  }
+
+  async function saveKnowledgeDocument(event) {
+    event.preventDefault();
+    setSavingKnowledge(true);
+    setKnowledgeFieldErrors({});
+    setKnowledgeError("");
+    setKnowledgeMessage("");
+    try {
+      const response = await request(
+        editingKnowledgeId === null
+          ? "/api/admin/knowledge/documents"
+          : `/api/admin/knowledge/documents/${editingKnowledgeId}`,
+        {
+          method: editingKnowledgeId === null ? "POST" : "PUT",
+          headers: { "X-CSRF-Token": csrf },
+          body: JSON.stringify(knowledgeForm),
+        },
+      );
+      setKnowledgeMessage(
+        response.embedding_pending
+          ? "Saved. This answer will use keyword search until embeddings finish."
+          : "Saved.",
+      );
+      setKnowledgeForm({ title: "", content: "", published: true });
+      setEditingKnowledgeId(null);
+      await refreshKnowledge();
+    } catch (error) {
+      setKnowledgeError(error.message);
+      setKnowledgeFieldErrors(error.fieldErrors || {});
+    } finally {
+      setSavingKnowledge(false);
+    }
+  }
+
+  async function editKnowledgeDocument(document) {
+    setKnowledgeError("");
+    try {
+      const response = await request(`/api/admin/knowledge/documents/${document.id}`);
+      const item = response.document;
+      setKnowledgeForm({
+        title: item.title,
+        content: item.content,
+        published: item.published,
+      });
+      setEditingKnowledgeId(item.id);
+      setKnowledgeFieldErrors({});
+      setKnowledgeMessage("");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setKnowledgeError(error.message);
+    }
+  }
+
+  async function deleteKnowledgeDocument(document) {
+    if (!window.confirm(`Delete the custom knowledge document "${document.title}"?`)) return;
+    setKnowledgeError("");
+    try {
+      await request(`/api/admin/knowledge/documents/${document.id}`, {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": csrf },
+      });
+      if (editingKnowledgeId === document.id) {
+        setEditingKnowledgeId(null);
+        setKnowledgeForm({ title: "", content: "", published: true });
+      }
+      await refreshKnowledge();
+    } catch (error) {
+      setKnowledgeError(error.message);
+    }
+  }
+
+  async function toggleKnowledgePublication(document) {
+    setKnowledgeError("");
+    try {
+      const response = await request(`/api/admin/knowledge/documents/${document.id}/publish`, {
+        method: "PATCH",
+        headers: { "X-CSRF-Token": csrf },
+        body: JSON.stringify({ published: !document.published }),
+      });
+      setKnowledgeMessage(
+        response.embedding_pending
+          ? "Publication saved. Embeddings are pending; keyword search remains available."
+          : `Document ${response.published ? "published" : "hidden"}.`,
+      );
+      await refreshKnowledge();
+    } catch (error) {
+      setKnowledgeError(error.message);
+    }
+  }
+
+  async function viewKnowledgeChunks(document) {
+    setKnowledgeError("");
+    try {
+      const response = await request(`/api/admin/knowledge/documents/${document.id}`);
+      setKnowledgeChunksDocument(response.document);
+    } catch (error) {
+      setKnowledgeError(error.message);
+    }
+  }
+
+  async function handleKnowledgeGap(gap, action) {
+    setKnowledgeError("");
+    if (action === "answer") {
+      setKnowledgeForm({ title: gap.question.slice(0, 120), content: "", published: true });
+      setEditingKnowledgeId(null);
+      setKnowledgeFieldErrors({});
+      setKnowledgeMessage("");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "delete" && !window.confirm("Delete this knowledge-gap question?")) return;
+    try {
+      if (action === "delete") {
+        await request(`/api/admin/knowledge/gaps/${gap.id}`, {
+          method: "DELETE",
+          headers: { "X-CSRF-Token": csrf },
+        });
+      } else {
+        await request(`/api/admin/knowledge/gaps/${gap.id}`, {
+          method: "PATCH",
+          headers: { "X-CSRF-Token": csrf },
+          body: JSON.stringify({ status: "resolved" }),
+        });
+      }
+      await refreshKnowledge();
+    } catch (error) {
+      setKnowledgeError(error.message);
+    }
+  }
+
+  async function reindexKnowledge() {
+    setKnowledgeReindexing(true);
+    setKnowledgeError("");
+    setKnowledgeMessage("");
+    try {
+      const result = await request("/api/admin/knowledge/reindex", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrf },
+      });
+      setKnowledgeMessage(
+        `Reindexed ${Object.values(result.counts).reduce((sum, count) => sum + count.documents, 0)} system documents; ` +
+        `${result.chunks_embedded} chunks embedded, ${result.chunks_skipped_unchanged} unchanged.`,
+      );
+      await refreshKnowledge();
+    } catch (error) {
+      setKnowledgeError(error.message);
+    } finally {
+      setKnowledgeReindexing(false);
+    }
+  }
+
+  async function searchKnowledge(event) {
+    event.preventDefault();
+    if (!knowledgeQuery.trim()) {
+      setKnowledgeSearchError("Enter a question to test retrieval.");
+      return;
+    }
+    setKnowledgeSearchLoading(true);
+    setKnowledgeSearchError("");
+    try {
+      const params = new URLSearchParams({
+        q: knowledgeQuery.trim(),
+        k: "4",
+        mode: knowledgeMode,
+      });
+      const response = await request(`/api/admin/knowledge/search?${params}`);
+      setKnowledgeResults(response.results);
+    } catch (error) {
+      setKnowledgeSearchError(error.message);
+      setKnowledgeResults([]);
+    } finally {
+      setKnowledgeSearchLoading(false);
     }
   }
 
@@ -408,6 +775,83 @@ function App() {
   async function refreshAdminFood() {
     const response = await request("/api/admin/food-facilities");
     setFoodFacilities(response.food_facilities);
+  }
+
+  async function refreshAdminTracks() {
+    const response = await request("/api/admin/tracks");
+    setAdminTracks(response.tracks);
+    setTracks(response.tracks.filter((track) => track.published));
+  }
+
+  function editTrack(track) {
+    setEditingTrackId(track.id);
+    setTrackForm({
+      slug: track.slug,
+      number: track.number,
+      title: track.title,
+      tagline: track.tagline,
+      description: track.description,
+      color_class: track.color_class,
+      problem_statements: track.problem_statements.join("\n"),
+      suggested_tech: track.suggested_tech.join("\n"),
+      resources: track.resources.map((resource) => `${resource.label} | ${resource.url}`).join("\n"),
+      sort_order: track.sort_order,
+      published: track.published,
+      registration_domain: track.registration_domain,
+    });
+  }
+
+  async function saveTrack(event) {
+    event.preventDefault();
+    setSavingTrack(true);
+    setErrorMessage("");
+    const resources = trackForm.resources.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+      const separator = line.indexOf("|");
+      return separator < 0
+        ? { label: line, url: "" }
+        : { label: line.slice(0, separator).trim(), url: line.slice(separator + 1).trim() };
+    });
+    const payload = {
+      ...trackForm,
+      problem_statements: trackForm.problem_statements.split("\n").map((item) => item.trim()).filter(Boolean),
+      suggested_tech: trackForm.suggested_tech.split("\n").map((item) => item.trim()).filter(Boolean),
+      resources,
+    };
+    try {
+      await request(
+        editingTrackId === null ? "/api/admin/tracks" : `/api/admin/tracks/${editingTrackId}`,
+        {
+          method: editingTrackId === null ? "POST" : "PATCH",
+          headers: { "X-CSRF-Token": csrf },
+          body: JSON.stringify(payload),
+        },
+      );
+      await refreshAdminTracks();
+      setEditingTrackId(null);
+      setTrackForm(emptyTrackForm());
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setSavingTrack(false);
+    }
+  }
+
+  async function deleteTrack(track) {
+    if (!window.confirm(`Delete the ${track.title} track?`)) return;
+    setErrorMessage("");
+    try {
+      await request(`/api/admin/tracks/${track.id}`, {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": csrf },
+      });
+      await refreshAdminTracks();
+      if (editingTrackId === track.id) {
+        setEditingTrackId(null);
+        setTrackForm(emptyTrackForm());
+      }
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
   }
 
   function editFoodFacility(facility) {
@@ -503,8 +947,8 @@ function App() {
         </a>
         <button className="mobile-menu-button" aria-label="Toggle navigation" onClick={() => setMobileMenu(!mobileMenu)}><Icon name={mobileMenu ? "close" : "menu"} /></button>
         <nav className={mobileMenu ? "main-nav nav-open" : "main-nav"}>
-          <a href="#about" onClick={(event) => { event.preventDefault(); navigate("home"); document.getElementById("about")?.scrollIntoView({ behavior: "smooth" }); }}>About</a>
-          <a href="#tracks" onClick={(event) => { event.preventDefault(); navigate("home"); document.getElementById("tracks")?.scrollIntoView({ behavior: "smooth" }); }}>Tracks</a>
+          <a href="#about" onClick={(event) => { event.preventDefault(); navigate("home"); window.location.hash = "about"; document.getElementById("about")?.scrollIntoView({ behavior: "smooth" }); }}>About</a>
+          <a href="#tracks" onClick={(event) => { event.preventDefault(); navigate("home"); window.location.hash = "tracks"; document.getElementById("tracks")?.scrollIntoView({ behavior: "smooth" }); }}>Tracks</a>
           <button className="nav-link" onClick={loadFoodPage} disabled={busy}>Food &amp; Facilities</button>
           {user && <button className="nav-link" onClick={showMyRegistration}>My registration</button>}
           {user?.is_admin && <button className="nav-link" onClick={loadAdmin}>Organizer</button>}
@@ -567,19 +1011,34 @@ function App() {
               <p>Explore a challenge that excites you, bring your own idea, and team up with people who think differently.</p>
             </div>
             <div className="track-grid">
-              {[
-                ["01", "Artificial Intelligence", "Build intelligent tools that make everyday life better.", "track-purple"],
-                ["02", "Generative AI", "Reimagine how we create, learn, and work.", "track-orange"],
-                ["03", "Web Development", "Create digital experiences that bring people together.", "track-blue"],
-                ["04", "Data Science", "Find the insight that changes everything.", "track-green"],
-                ["05", "Cybersecurity", "Make the connected world a safer place.", "track-pink"],
-                ["06", "Open Innovation", "Got an idea that doesn't fit a box? This one's yours.", "track-yellow"],
-              ].map(([number, title, description, color]) => (
-                <article className={`track-card ${color}`} key={title}>
-                  <div className="track-card-top"><span>{number} / TRACK</span><span className="track-arrow"><Icon name="arrow" size={17} /></span></div>
+              {tracksLoading ? (
+                <p className="track-list-message" role="status">Loading hackathon tracks...</p>
+              ) : tracksError ? (
+                <div className="track-list-message" role="alert">
+                  <p>We couldn't load the tracks right now. Please try again in a moment.</p>
+                  <button className="details-button" type="button" onClick={() => {
+                    setTracksLoading(true);
+                    setTracksError("");
+                    request("/api/tracks")
+                      .then((response) => setTracks(response.tracks))
+                      .catch((error) => setTracksError(error.message))
+                      .finally(() => setTracksLoading(false));
+                  }}>Try again</button>
+                </div>
+              ) : tracks.length === 0 ? (
+                <p className="track-list-message">Tracks will be announced here soon.</p>
+              ) : tracks.map((track) => (
+                <button
+                  type="button"
+                  className={`track-card ${track.color_class}`}
+                  key={track.id}
+                  onClick={() => openTrack(track)}
+                  aria-label={`Open ${track.title} track`}
+                >
+                  <div className="track-card-top"><span>{track.number} / TRACK</span><span className="track-arrow"><Icon name="arrow" size={17} /></span></div>
                   <div className="track-decoration"><Icon name="spark" size={28} /></div>
-                  <h3>{title}</h3><p>{description}</p>
-                </article>
+                  <h3>{track.title}</h3><p>{track.tagline}</p>
+                </button>
               ))}
             </div>
           </section>
@@ -589,6 +1048,67 @@ function App() {
             <div><span className="section-kicker">YOUR NEXT BIG THING STARTS HERE</span><h2>Got an idea?<br /><span>Give it a weekend.</span></h2></div>
             <button className="button button-dark button-large" onClick={openRegistration}>Join the hackathon <Icon name="arrow" size={18} /></button>
           </section>
+        </main>
+      )}
+
+      {page === "track" && (
+        <main className="track-detail-page">
+          {trackDetailState === "loading" && <div className="track-detail-message" role="status"><span className="loader" /> Loading track details...</div>}
+          {trackDetailState === "not-found" && (
+            <section className="track-detail-message">
+              <span className="section-kicker">TRACK DIRECTORY</span>
+              <h1>Track not found.</h1>
+              <p>This track may have been unpublished or the link may be incorrect.</p>
+              <button type="button" className="button button-outline button-large" onClick={backToTracks}>Back to all tracks <Icon name="arrow" size={18} /></button>
+            </section>
+          )}
+          {trackDetailState === "error" && (
+            <section className="track-detail-message" role="alert">
+              <span className="section-kicker">TRACK DIRECTORY</span>
+              <h1>We couldn't load this track.</h1>
+              <p>{trackDetailError}</p>
+              <button type="button" className="button button-outline button-large" onClick={backToTracks}>Back to all tracks <Icon name="arrow" size={18} /></button>
+            </section>
+          )}
+          {trackDetailState === "loaded" && activeTrack && (
+            <>
+              <section className={`track-detail-hero ${activeTrack.color_class}`}>
+                <button type="button" className="track-back-link" onClick={backToTracks}>← Back to all tracks</button>
+                <span className="track-detail-number">{activeTrack.number} / TRACK</span>
+                <h1>{activeTrack.title}</h1>
+                <p>{activeTrack.tagline}</p>
+                <div className="track-detail-decoration"><Icon name="spark" size={86} /></div>
+              </section>
+              <section className="track-detail-content">
+                <div className="track-detail-intro">
+                  <span className="section-kicker">ABOUT THIS TRACK</span>
+                  <p>{activeTrack.description}</p>
+                </div>
+                <div className="track-detail-columns">
+                  <section className="track-detail-panel">
+                    <span className="section-kicker">IDEAS TO GET YOU STARTED</span>
+                    <h2>Example problem statements</h2>
+                    <ul>{activeTrack.problem_statements.map((statement) => <li key={statement}>{statement}</li>)}</ul>
+                  </section>
+                  <section className="track-detail-panel">
+                    <span className="section-kicker">TOOLS YOU COULD USE</span>
+                    <h2>Suggested tech stack</h2>
+                    <div className="track-tech-chips">{activeTrack.suggested_tech.map((technology) => <span className="track-tech-chip" key={technology}>{technology}</span>)}</div>
+                    {activeTrack.resources.length > 0 && (
+                      <div className="track-resource-list">
+                        <h3>Helpful resources</h3>
+                        {activeTrack.resources.map((resource) => <a key={`${resource.label}-${resource.url}`} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.label} <span aria-hidden="true">↗</span></a>)}
+                      </div>
+                    )}
+                  </section>
+                </div>
+                <div className="track-detail-actions">
+                  <button type="button" className="button button-outline button-large" onClick={backToTracks}>Back to all tracks</button>
+                  <button type="button" className="button button-primary button-large" onClick={() => openRegistration(activeTrack.registration_domain)} disabled={busy}>Register for this track <Icon name="arrow" size={18} /></button>
+                </div>
+              </section>
+            </>
+          )}
         </main>
       )}
 
@@ -728,6 +1248,8 @@ function App() {
           <div className="admin-tabs" role="tablist" aria-label="Organizer dashboard sections">
             <button type="button" role="tab" aria-selected={adminSection === "registrations"} className={adminSection === "registrations" ? "admin-tab admin-tab-active" : "admin-tab"} onClick={() => setAdminSection("registrations")}>Registrations</button>
             <button type="button" role="tab" aria-selected={adminSection === "food"} className={adminSection === "food" ? "admin-tab admin-tab-active" : "admin-tab"} onClick={() => setAdminSection("food")}>Food &amp; Facilities</button>
+            <button type="button" role="tab" aria-selected={adminSection === "tracks"} className={adminSection === "tracks" ? "admin-tab admin-tab-active" : "admin-tab"} onClick={() => setAdminSection("tracks")}>Tracks</button>
+            <button type="button" role="tab" aria-selected={adminSection === "knowledge"} className={adminSection === "knowledge" ? "admin-tab admin-tab-active" : "admin-tab"} onClick={() => { setAdminSection("knowledge"); loadKnowledge(); }}>Knowledge</button>
           </div>
           {adminSection === "registrations" ? (
             <>
@@ -742,7 +1264,7 @@ function App() {
                 {adminRows.length === 0 && <tr><td colSpan="6" className="table-empty">No registrations match those filters.</td></tr>}
               </tbody></table></div>
             </>
-          ) : (
+          ) : adminSection === "food" ? (
             <section className="food-admin-section">
               <div className="admin-title"><div><h1>Food <span>&amp; facilities.</span></h1><p>Manage the details shown to participants and in the FAQ assistant.</p></div></div>
               <form className="food-editor" onSubmit={saveFoodFacility}>
@@ -793,6 +1315,160 @@ function App() {
                 })}
               </div>
             </section>
+          ) : adminSection === "tracks" ? (
+            <section className="food-admin-section track-admin-section">
+              <div className="admin-title"><div><h1>Hackathon <span>tracks.</span></h1><p>Edit the public track pages and choose which ones participants can see.</p></div><div className="admin-count"><b>{adminTracks.length}</b><span>tracks</span></div></div>
+              <form className="food-editor" onSubmit={saveTrack}>
+                <div className="food-editor-heading">
+                  <div><span className="section-kicker">{editingTrackId === null ? "ADD TRACK" : "EDIT TRACK"}</span><h2>{editingTrackId === null ? "Create a track" : `Update ${trackForm.title}`}</h2></div>
+                  {editingTrackId !== null && <button type="button" className="text-button" onClick={() => { setEditingTrackId(null); setTrackForm(emptyTrackForm()); }}>Cancel edit</button>}
+                </div>
+                <div className="field-grid">
+                  <Field label="Track title" name="title" value={trackForm.title} onChange={(event) => setTrackForm({ ...trackForm, title: event.target.value })} required maxLength={100} />
+                  <Field label="URL slug" name="slug" value={trackForm.slug} onChange={(event) => setTrackForm({ ...trackForm, slug: event.target.value })} placeholder="example-track" required maxLength={100} />
+                  <Field label="Track number" name="number" value={trackForm.number} onChange={(event) => setTrackForm({ ...trackForm, number: event.target.value })} placeholder="01" required maxLength={3} />
+                  <Field label="Sort order" name="sort_order" type="number" min="0" value={trackForm.sort_order} onChange={(event) => setTrackForm({ ...trackForm, sort_order: Number(event.target.value) })} required />
+                  <Field className="field-wide" label="Tagline" name="tagline" value={trackForm.tagline} onChange={(event) => setTrackForm({ ...trackForm, tagline: event.target.value })} required maxLength={180} />
+                  <Field className="field-wide" label="Description" name="description" as="textarea" rows="3" value={trackForm.description} onChange={(event) => setTrackForm({ ...trackForm, description: event.target.value })} required maxLength={2000} />
+                  <Field className="field-wide" label="Example problem statements (one per line)" name="problem_statements" as="textarea" rows="5" value={trackForm.problem_statements} onChange={(event) => setTrackForm({ ...trackForm, problem_statements: event.target.value })} required />
+                  <Field className="field-wide" label="Suggested technologies (one per line)" name="suggested_tech" as="textarea" rows="3" value={trackForm.suggested_tech} onChange={(event) => setTrackForm({ ...trackForm, suggested_tech: event.target.value })} required />
+                  <Field className="field-wide" label="Resources (one per line: label | https://...)" name="resources" as="textarea" rows="3" value={trackForm.resources} onChange={(event) => setTrackForm({ ...trackForm, resources: event.target.value })} hint="Use HTTPS links. Leave blank if no resources are available." />
+                  <Field label="Card color" name="color_class" as="select" options={["track-purple", "track-orange", "track-blue", "track-green", "track-pink", "track-yellow"]} value={trackForm.color_class} onChange={(event) => setTrackForm({ ...trackForm, color_class: event.target.value })} required />
+                  <Field label="Registration domain" name="registration_domain" as="select" options={DOMAINS} value={trackForm.registration_domain} onChange={(event) => setTrackForm({ ...trackForm, registration_domain: event.target.value })} required />
+                </div>
+                <label className="food-publish-toggle"><input type="checkbox" checked={trackForm.published} onChange={(event) => setTrackForm({ ...trackForm, published: event.target.checked })} /><span>Publish this track to participants and the assistant</span></label>
+                <p className="food-card-intro">Unpublished tracks are hidden from the public track list and assistant.</p>
+                <button className="button button-primary button-small" type="submit" disabled={savingTrack}>{savingTrack ? "Saving..." : trackForm.published ? "Save & publish" : "Save draft"}</button>
+              </form>
+              <div className="track-admin-grid">
+                {adminTracks.map((track) => (
+                  <article className="track-admin-card" key={track.id}>
+                    <div className={`track-admin-swatch ${track.color_class}`} aria-hidden="true" />
+                    <span className="section-kicker">{track.number} / {track.published ? "PUBLISHED" : "DRAFT"}</span>
+                    <h3>{track.title}</h3>
+                    <p>{track.tagline}</p>
+                    <p><b>Registration domain:</b> {track.registration_domain}</p>
+                    <div className="food-admin-actions">
+                      <button type="button" className="details-button" onClick={() => editTrack(track)}>Edit</button>
+                      <button type="button" className="food-delete-button" onClick={() => deleteTrack(track)}>Delete</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <section className="knowledge-admin-section">
+              <div className="admin-title">
+                <div><h1>Knowledge <span>base.</span></h1><p>Manage official answers, test retrieval, and review unanswered questions.</p></div>
+              </div>
+              {knowledgeError && <p className="inline-alert" role="alert">{knowledgeError}</p>}
+              {knowledgeMessage && <p className="knowledge-success" role="status">{knowledgeMessage}</p>}
+              {knowledgeLoading && <p className="knowledge-muted">Loading knowledge tools...</p>}
+
+              <div className="knowledge-status-bar">
+                <div><span>Documents</span><b>{knowledgeStatus?.document_count ?? "—"}</b></div>
+                <div><span>Chunks</span><b>{knowledgeStatus?.chunk_count ?? "—"}</b></div>
+                <div><span>Embedded chunks</span><b>{knowledgeStatus?.embedded_chunk_count ?? "—"}</b></div>
+                <div><span>Embeddings</span><b>{knowledgeStatus ? (knowledgeStatus.embeddings_available ? "Available" : "Unavailable") : "—"}</b></div>
+                <button className="button button-primary button-small" type="button" onClick={reindexKnowledge} disabled={knowledgeReindexing}>
+                  {knowledgeReindexing ? "Reindexing..." : "Reindex now"}
+                </button>
+              </div>
+
+              <form className="food-editor knowledge-editor" onSubmit={saveKnowledgeDocument}>
+                <div className="food-editor-heading">
+                  <div>
+                    <span className="section-kicker">{editingKnowledgeId === null ? "ADD CUSTOM KNOWLEDGE" : "EDIT CUSTOM KNOWLEDGE"}</span>
+                    <h2>{editingKnowledgeId === null ? "Create an answer" : "Update this answer"}</h2>
+                  </div>
+                  {editingKnowledgeId !== null && <button type="button" className="text-button" onClick={() => { setEditingKnowledgeId(null); setKnowledgeForm({ title: "", content: "", published: true }); setKnowledgeFieldErrors({}); }}>Cancel edit</button>}
+                </div>
+                <Field label="Title" name="title" value={knowledgeForm.title} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, title: event.target.value })} error={knowledgeFieldErrors.title} required minLength={3} maxLength={120} />
+                <label className="field">
+                  <span className="field-label">Answer content <span className="required">*</span></span>
+                  <textarea name="content" rows="6" value={knowledgeForm.content} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, content: event.target.value })} aria-invalid={Boolean(knowledgeFieldErrors.content)} minLength={20} maxLength={4000} />
+                  <span className="field-hint">{knowledgeForm.content.length}/4000 characters · minimum 20</span>
+                  {knowledgeFieldErrors.content && <span className="field-error">{knowledgeFieldErrors.content}</span>}
+                </label>
+                <label className="food-publish-toggle"><input type="checkbox" checked={knowledgeForm.published} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, published: event.target.checked })} /><span>Publish this answer for chatbot retrieval</span></label>
+                <div className="knowledge-form-actions">
+                  <button className="button button-primary button-small" type="submit" disabled={savingKnowledge}>{savingKnowledge ? "Saving..." : "Save answer"}</button>
+                  <span className="knowledge-muted">Content is stored and displayed as plain text.</span>
+                </div>
+              </form>
+
+              <section className="knowledge-panel">
+                <div className="knowledge-panel-heading"><div><span className="section-kicker">KNOWLEDGE DOCUMENTS</span><h2>Documents</h2></div></div>
+                <div className="knowledge-filters">
+                  <label className="search-box"><span className="search-symbol">⌕</span><input aria-label="Search knowledge documents" placeholder="Search title or content..." value={knowledgeSearch} onChange={(event) => { const value = event.target.value; setKnowledgeSearch(value); loadKnowledgeDocuments(value, knowledgeOrigin).catch((error) => setKnowledgeError(error.message)); }} /></label>
+                  <select aria-label="Filter knowledge documents" value={knowledgeOrigin} onChange={(event) => { const value = event.target.value; setKnowledgeOrigin(value); loadKnowledgeDocuments(knowledgeSearch, value).catch((error) => setKnowledgeError(error.message)); }}>
+                    <option value="">All sources</option><option value="system">System</option><option value="admin">Custom</option>
+                  </select>
+                </div>
+                {knowledgeLoading ? <p className="knowledge-muted">Loading documents...</p> : knowledgeDocuments.length === 0 ? <p className="knowledge-empty">No knowledge documents match this filter.</p> : (
+                  <div className="knowledge-document-list">
+                    {knowledgeDocuments.map((document) => (
+                      <article className="knowledge-document" key={document.id}>
+                        <div className="knowledge-document-main">
+                          <div className="knowledge-badges">
+                            <span className={`knowledge-origin knowledge-origin-${document.origin}`}>{document.origin === "admin" ? "Custom" : "System"}</span>
+                            <span className={`knowledge-published ${document.published ? "is-published" : "is-hidden"}`}>{document.published ? "Published" : "Hidden"}</span>
+                          </div>
+                          <h3>{document.title}</h3>
+                          <p>{document.chunk_count} chunks · {document.embedded_chunk_count} embedded · Updated {document.updated_at}</p>
+                        </div>
+                        <div className="knowledge-document-actions">
+                          {document.origin === "admin" && <button type="button" className="details-button" onClick={() => editKnowledgeDocument(document)}>Edit</button>}
+                          <button type="button" className="details-button" onClick={() => viewKnowledgeChunks(document)}>View chunks</button>
+                          <button type="button" className="details-button" onClick={() => toggleKnowledgePublication(document)}>{document.published ? "Unpublish" : "Publish"}</button>
+                          {document.origin === "admin" && <button type="button" className="food-delete-button" onClick={() => deleteKnowledgeDocument(document)}>Delete</button>}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="knowledge-panel">
+                <div className="knowledge-panel-heading"><div><span className="section-kicker">RETRIEVAL CHECK</span><h2>Test search</h2></div></div>
+                <form className="knowledge-search-form" onSubmit={searchKnowledge}>
+                  <label className="search-box"><span className="search-symbol">⌕</span><input aria-label="Test knowledge retrieval" placeholder="Ask a question to test the index..." value={knowledgeQuery} onChange={(event) => setKnowledgeQuery(event.target.value)} /></label>
+                  <select aria-label="Retrieval mode" value={knowledgeMode} onChange={(event) => setKnowledgeMode(event.target.value)}>
+                    <option value="hybrid">Hybrid</option><option value="bm25">Keyword</option><option value="semantic">Semantic</option>
+                  </select>
+                  <button className="button button-primary button-small" type="submit" disabled={knowledgeSearchLoading}>{knowledgeSearchLoading ? "Searching..." : "Search"}</button>
+                </form>
+                {knowledgeSearchError && <p className="field-error" role="alert">{knowledgeSearchError}</p>}
+                {!knowledgeSearchLoading && knowledgeQuery && knowledgeResults.length === 0 && !knowledgeSearchError && <p className="knowledge-empty">No matching chunks found. Try another question or check publication status.</p>}
+                <div className="knowledge-results">
+                  {knowledgeResults.map((result, index) => (
+                    <article className="knowledge-result" key={`${result.source_key}-${index}`}>
+                      <div><span className="section-kicker">#{index + 1} · {result.source_type}</span><h3>{result.title}</h3></div>
+                      <p>{result.chunk_text}</p>
+                      <small>BM25 {result.bm25_score == null ? "—" : result.bm25_score.toFixed(3)} · Semantic {result.semantic_score == null ? "—" : result.semantic_score.toFixed(3)} · Fused {result.fused_score == null ? "—" : result.fused_score.toFixed(4)}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="knowledge-panel">
+                <div className="knowledge-panel-heading"><div><span className="section-kicker">QUESTIONS NEEDING AN ANSWER</span><h2>Knowledge gaps</h2></div></div>
+                {knowledgeGaps.filter((gap) => gap.status === "open").length === 0 ? <p className="knowledge-empty">No open questions. Unanswered event questions will appear here.</p> : (
+                  <div className="knowledge-gap-list">
+                    {knowledgeGaps.filter((gap) => gap.status === "open").map((gap) => (
+                      <article className="knowledge-gap" key={gap.id}>
+                        <div><h3>{gap.question}</h3><p>Asked {gap.times_asked} {gap.times_asked === 1 ? "time" : "times"} · Last seen {gap.last_seen}</p></div>
+                        <div className="knowledge-document-actions">
+                          <button type="button" className="details-button" onClick={() => handleKnowledgeGap(gap, "answer")}>Add answer</button>
+                          <button type="button" className="details-button" onClick={() => handleKnowledgeGap(gap, "resolve")}>Mark resolved</button>
+                          <button type="button" className="food-delete-button" onClick={() => handleKnowledgeGap(gap, "delete")}>Delete</button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </section>
           )}
         </main>
       )}
@@ -830,6 +1506,8 @@ function App() {
       )}
 
       {selectedRegistration && page === "admin" && <div className="modal-backdrop" onClick={() => setSelectedRegistration(null)}><section className="details-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title" onClick={(event) => event.stopPropagation()}><button className="modal-close" aria-label="Close details" onClick={() => setSelectedRegistration(null)}><Icon name="close" /></button><span className="section-kicker">PARTICIPANT DETAILS</span><h2 id="detail-title">{selectedRegistration.full_name}</h2><p className="modal-id">{selectedRegistration.registration_id} · {selectedRegistration.email}</p><div className="modal-details">{Object.entries({ College: selectedRegistration.college_name, Mobile: selectedRegistration.mobile_number, Degree: selectedRegistration.degree, Department: selectedRegistration.department, "Year of study": selectedRegistration.year_of_study, "College location": selectedRegistration.college_location, Participation: selectedRegistration.participation_type, "Team name": selectedRegistration.team_name || "—", "Team leader": selectedRegistration.team_leader || "—", Domain: selectedRegistration.domain, "Technical skills": selectedRegistration.technical_skills, "Project title": selectedRegistration.project_title || "—", "Project idea": selectedRegistration.project_idea, GitHub: selectedRegistration.github_url || "—" }).map(([label, value]) => <div key={label}><span>{label}</span><p>{value}</p></div>)}</div>{selectedRegistration.team_members?.length > 0 && <div className="modal-team"><b>Team members</b>{selectedRegistration.team_members.map((member) => <p key={member.email}>{member.name} · {member.email}</p>)}</div>}<label className="modal-status">Registration status<select value={selectedRegistration.status} onChange={(event) => changeStatus(selectedRegistration, event.target.value)}>{STATUS_OPTIONS.map((status) => <option key={status}>{status}</option>)}</select></label></section></div>}
+
+      {knowledgeChunksDocument && page === "admin" && <div className="modal-backdrop" onClick={() => setKnowledgeChunksDocument(null)}><section className="details-modal knowledge-chunks-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-chunks-title" onClick={(event) => event.stopPropagation()}><button className="modal-close" aria-label="Close chunks" onClick={() => setKnowledgeChunksDocument(null)}><Icon name="close" /></button><span className="section-kicker">INDEXED CHUNKS</span><h2 id="knowledge-chunks-title">{knowledgeChunksDocument.title}</h2><div className="knowledge-chunk-list">{knowledgeChunksDocument.chunks.map((chunk) => <article className="knowledge-chunk" key={chunk.id}><span>Chunk {chunk.chunk_index + 1} · {chunk.token_count} tokens · {chunk.embedded ? "Embedded" : "Keyword only"}</span><pre>{chunk.text}</pre></article>)}</div></section></div>}
 
       <footer className="site-footer"><a href="#home" className="brand footer-brand" onClick={(event) => { event.preventDefault(); navigate("home"); }}><span className="brand-mark"><Icon name="spark" size={18} /></span><span>hack<span className="brand-light">thefuture</span></span></a><span>MADE FOR THE BUILDERS OF TOMORROW.</span><span>© 2026 {eventName}</span></footer>
       {notice && page === "registration" && <div className="toast-note"><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}

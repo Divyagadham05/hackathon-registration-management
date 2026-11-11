@@ -39,17 +39,28 @@ function Chatbot({ csrf, request: requestApi }) {
     setDraft("");
     setError("");
     setBusy(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 90000);
 
     try {
       const response = await requestApi("/api/chat", {
         method: "POST",
         headers: { "X-CSRF-Token": csrf },
         body: JSON.stringify({ messages: nextMessages.slice(-12) }),
+        signal: controller.signal,
       });
-      setMessages((current) => [...current, { role: "assistant", content: response.reply }].slice(-40));
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: response.reply,
+          sources: Array.isArray(response.sources) ? response.sources : [],
+        },
+      ].slice(-40));
     } catch (requestError) {
       setError(requestError.message);
     } finally {
+      window.clearTimeout(timeoutId);
       setBusy(false);
     }
   }
@@ -76,11 +87,25 @@ function Chatbot({ csrf, request: requestApi }) {
           </header>
           <p className="chat-privacy-note">Some website questions may be sent to Groq. Don’t share passwords or private information.</p>
           <div className="chat-messages" ref={messagesRef} aria-live="polite">
-            {messages.map((message, index) => (
-              <p className={`chat-message chat-message-${message.role}`} key={`${index}-${message.role}`}>
-                {message.content}
-              </p>
-            ))}
+            {messages.map((message, index) => {
+              const bubble = (
+                <p className={`chat-message chat-message-${message.role}`} key={`${index}-${message.role}`}>
+                  {message.content}
+                </p>
+              );
+              if (!Array.isArray(message.sources) || message.sources.length === 0) {
+                return bubble;
+              }
+              const titles = [...new Set(message.sources.map((source) => source.title).filter(Boolean))];
+              return (
+                <div className="chat-message-group" key={`${index}-${message.role}`}>
+                  {bubble}
+                  <small className="chat-message-sources">
+                    Source{titles.length === 1 ? "" : "s"}: {titles.join(", ")}
+                  </small>
+                </div>
+              );
+            })}
             {busy && (
               <p className="chat-message chat-message-assistant chat-thinking" aria-label="Assistant is thinking">
                 Thinking<span className="chat-thinking-dots" aria-hidden="true">...</span>
@@ -118,7 +143,7 @@ function Chatbot({ csrf, request: requestApi }) {
               }}
               placeholder="Ask a question..."
               aria-label="Your message"
-              maxLength={1200}
+              maxLength={500}
               rows={2}
               disabled={busy}
             />

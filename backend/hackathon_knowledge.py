@@ -1,3 +1,4 @@
+import os
 import re
 
 if __package__:
@@ -34,9 +35,7 @@ KNOWLEDGE_CATEGORIES = (
         (
             "The public homepage lists November 1–2, 2026 at Innovation Hub, Main "
             "Campus, and describes a 24-hour event for college students aged 16 or "
-            "older. Participants may come with family. It lists "
-            "Artificial Intelligence, Generative AI, Web Development, Data Science, "
-            "Cybersecurity, and Other project domains. Prize details and any other "
+            "older. Participants may come with family. Prize details and any other "
             "event schedule are not announced in the published website information."
         ),
     ),
@@ -138,6 +137,39 @@ KNOWLEDGE_CATEGORIES = (
     ),
 )
 
+DEFAULT_CHATBOT_REFUSAL_MESSAGE = (
+    "I can only help with questions about the Hack the Future hackathon and this "
+    "website, such as registration, teams, schedule, rules, prizes and support. "
+    "Please ask me something about those."
+)
+GREETING_REPLY = (
+    "Hi! I can help with Hack the Future registration, teams, schedule, rules, "
+    "prizes, and website support. What would you like to know?"
+)
+HACKATHON_INFO = """\
+Hack the Future is a student hackathon described as a 24-hour sprint.
+The published dates are November 1–2, 2026, at Innovation Hub, Main Campus.
+Participants must be college students aged 16 or older; they may come with family.
+Registration offers Artificial Intelligence, Generative AI, Web Development,
+Data Science, Cybersecurity, and Other. Teams can have 2 to 5 participants,
+including the team leader. Registration requires an account, a completed form,
+and submission; successful submission displays a registration ID.
+Breakfast is 8:00–9:00 AM, lunch 1:00–2:00 PM, evening snacks 4:00–4:30 PM,
+dinner 7:30–8:30 PM, and drinking water is available throughout the event.
+Meals are free for eligible participants. Organizer contact details are not
+published. Prizes are not announced.
+
+TODO: Confirm the theme, problem statements, judging criteria, prize details,
+registration deadline, exact event start/end times, detailed rules and code of
+conduct, submission process, certificate policy, and organizer contact details.
+"""
+GREETING_PATTERN = re.compile(
+    r"^(?:hi|hello|hey|good morning|good afternoon|good evening|"
+    r"thanks|thank you|thx|what can you do|what do you do|"
+    r"what can you help me with)[!.?,\s]*$",
+    re.IGNORECASE,
+)
+
 
 def is_hackathon_question(question):
     if not isinstance(question, str) or not is_hackathon_faq_question(question):
@@ -145,7 +177,20 @@ def is_hackathon_question(question):
     return True
 
 
-def retrieve_hackathon_context(question, food_facilities=()):
+def get_chatbot_refusal_message():
+    return os.environ.get(
+        "CHATBOT_REFUSAL_MESSAGE",
+        DEFAULT_CHATBOT_REFUSAL_MESSAGE,
+    ).strip() or DEFAULT_CHATBOT_REFUSAL_MESSAGE
+
+
+def get_chatbot_greeting_reply(question):
+    if isinstance(question, str) and GREETING_PATTERN.fullmatch(question.strip()):
+        return GREETING_REPLY
+    return None
+
+
+def retrieve_hackathon_context(question, food_facilities=(), tracks=None):
     if not is_hackathon_question(question):
         return ""
 
@@ -186,8 +231,18 @@ def retrieve_hackathon_context(question, food_facilities=()):
             ]
             if published_types:
                 content += " Published facilities: " + ", ".join(published_types) + "."
+        elif category == "Event Details":
+            if tracks is not None:
+                track_details = [
+                    f"{track['title']}: {track['tagline']}"
+                    for track in tracks
+                ]
+                if track_details:
+                    content += " Published tracks: " + "; ".join(track_details) + "."
+                else:
+                    content += " There are currently no published tracks."
         sections.append(f"{category}:\n{content}")
-    faq_context = retrieve_faq_context(question, food_facilities)
+    faq_context = retrieve_faq_context(question, food_facilities, tracks)
     if faq_context:
         sections.append(f"Relevant FAQ entries:\n{faq_context}")
     return "\n\n".join(sections)

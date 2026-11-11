@@ -439,9 +439,9 @@ FAQ_DATASET = (
 )
 
 OUT_OF_SCOPE_REPLY = (
-    "I'm your Hackathon Website Assistant. I can help you with hackathon details, "
-    "registration, login, facilities, and website-related FAQs. Please ask me "
-    "something related to this hackathon."
+    "I can only help with questions about the Hack the Future hackathon and this "
+    "website, such as registration, teams, schedule, rules, prizes and support. "
+    "Please ask me something about those."
 )
 UNKNOWN_INFO_REPLY = (
     "That information is not available in the official hackathon information yet. "
@@ -452,9 +452,21 @@ FOOD_INFO_UNAVAILABLE = (
     "announced yet. Please check back for updates."
 )
 OUT_OF_SCOPE_TERMS = re.compile(
-    r"\b(?:gold|weather|joke|essay|math(?:ematics)?|calculate|code|python|javascript)\b|"
-    r"\b(?:another|different)\s+(?:company|website|site)\b|"
-    r"\b(?:company's|competitor's)\b",
+    r"\b(?:gold|weather|jokes?|essays?|poems?|math(?:ematics)?|calculate|"
+    r"solve|python|javascript|homework|science|history|politics|religion|"
+    r"celebrity|celebrities|movie|movies|cricket|sports?|news|medical|legal|"
+    r"financial advice|capital of|president of)\b|"
+    r"\b(?:write|generate|create)\b.{0,40}\b(?:code|function|essay|poem|"
+    r"email|resume|story)\b|"
+    r"\b(?:other|another|different)\s+(?:hackathon|company|website|site)\b|"
+    r"\b(?:company's|competitor's)\b|"
+    r"\b(?:system\s+prompt|chatbot internals?)\b|"
+    r"\b(?:your|assistant's|chatbot's|model's)\s+api[_ -]?keys?\b|"
+    r"\bignore\b.{0,60}\b(?:instructions?|rules|prompt|restrictions?)\b|"
+    r"\b(?:reveal|show|print|repeat|change|override|ignore)\b.{0,60}"
+    r"\b(?:instructions?|rules|prompt|role|persona)\b|"
+    r"\b(?:act|pretend|roleplay|role-play)\s+as\b|"
+    r"\b(?:forget|disregard)\b.{0,60}\b(?:instructions?|rules|prompt)\b",
     re.IGNORECASE,
 )
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
@@ -546,11 +558,13 @@ def is_hackathon_faq_question(question):
         word in question.casefold()
         for word in (
             "hackathon", "event", "website", "registration", "register", "login",
-            "sign up", "account", "admin", "form", "team", "support", "contact",
-            "family", "parents", "age", "student", "eligible", "participate",
+            "sign up", "account", "password", "admin", "form", "team", "squad",
+            "support", "contact", "family", "parents", "mom", "dad", "mother",
+            "father", "age", "student", "school", "kid", "eligible", "participate",
             "food", "meal", "breakfast", "lunch", "dinner", "snack",
             "facility", "facilities", "amenity", "amenities", "parking", "wifi",
-            "water", "organizer", "organiser", "confirmation", "domain",
+            "water", "organizer", "organiser", "confirmation", "domain", "degree",
+            "track", "innovation",
         )
     )
 
@@ -696,7 +710,12 @@ def _format_food_time(value):
     return f"{hours % 12 or 12}:{minutes:02d} {suffix}"
 
 
-def _resolve_food_answer(entry, food_facilities, question):
+def _resolve_food_answer(entry, food_facilities, question, tracks=None):
+    if entry["id"] == "event_tracks" and tracks is not None:
+        if not tracks:
+            return "There are no currently published hackathon tracks."
+        available = "; ".join(f"{track['title']}: {track['tagline']}" for track in tracks)
+        return f"Published hackathon tracks: {available}"
     if entry["id"] == "published_facilities" and food_facilities:
         names = ", ".join(facility["facility_type"] for facility in food_facilities)
         return f"Officially published facilities: {names}."
@@ -818,7 +837,7 @@ def _resolve_food_answer(entry, food_facilities, question):
     return entry["answer"]
 
 
-def get_faq_reply(question, food_facilities=()):
+def get_faq_reply(question, food_facilities=(), tracks=None):
     clauses = re.split(
         r"[?;]+|\band\s+(?=(?:what|when|where|how|is|are|can|will|do|does)\b)",
         question,
@@ -827,7 +846,7 @@ def get_faq_reply(question, food_facilities=()):
     if len(clauses) > 1:
         replies = []
         for clause in clauses:
-            reply = get_faq_reply(clause.strip(), food_facilities) if clause.strip() else None
+            reply = get_faq_reply(clause.strip(), food_facilities, tracks) if clause.strip() else None
             if reply and reply not in replies:
                 replies.append(reply)
         if replies:
@@ -847,16 +866,16 @@ def get_faq_reply(question, food_facilities=()):
         return None
     answers = []
     for _, entry in matches:
-        answer = _resolve_food_answer(entry, food_facilities, question)
+        answer = _resolve_food_answer(entry, food_facilities, question, tracks)
         if answer not in answers:
             answers.append(answer)
     return "\n".join(answers)
 
 
-def retrieve_faq_context(question, food_facilities=()):
+def retrieve_faq_context(question, food_facilities=(), tracks=None):
     matches = match_faqs(question, min_score=0.5)
     sections = []
     for _, entry in matches:
-        answer = _resolve_food_answer(entry, food_facilities, question)
+        answer = _resolve_food_answer(entry, food_facilities, question, tracks)
         sections.append(f"{entry['category']} ({entry['id']}): {answer}")
     return "\n".join(sections)

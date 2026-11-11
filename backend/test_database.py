@@ -20,6 +20,9 @@ class StartupCursor:
     def fetchall(self):
         return []
 
+    def fetchone(self):
+        return {"count": 0}
+
 
 class StartupConnection:
     def execute(self, query, parameters=()):
@@ -112,6 +115,130 @@ class SQLiteApplicationSmokeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.csrf = response.get_json()["csrf_token"]
+
+    def test_public_tracks_are_ordered_and_hidden_tracks_return_404(self):
+        response = self.client.get("/api/tracks")
+        self.assertEqual(response.status_code, 200)
+        tracks = response.get_json()["tracks"]
+        self.assertEqual(len(tracks), 6)
+        self.assertEqual([track["sort_order"] for track in tracks], [1, 2, 3, 4, 5, 6])
+        open_track = self.client.get("/api/tracks/open-innovation")
+        self.assertEqual(open_track.status_code, 200)
+        self.assertEqual(open_track.get_json()["track"]["registration_domain"], "Other")
+        chatbot_response = self.client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "What tracks are available?"}]},
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(chatbot_response.status_code, 200)
+        self.assertIn("Artificial Intelligence: Build intelligent tools", chatbot_response.get_json()["reply"])
+        self.assertIn("Open Innovation:", chatbot_response.get_json()["reply"])
+        missing = self.client.get("/api/tracks/not-a-track")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json(), {"error": "Track not found."})
+
+        with self.app.app_context():
+            database = self.app.get_db()
+            database.execute(
+                "UPDATE tracks SET published = FALSE WHERE slug = ?",
+                ("open-innovation",),
+            )
+            database.commit()
+        self.assertEqual(len(self.client.get("/api/tracks").get_json()["tracks"]), 5)
+        self.assertEqual(self.client.get("/api/tracks/open-innovation").status_code, 404)
+
+    def test_admin_tracks_require_admin_and_csrf_for_writes(self):
+        payload = {
+            "slug": "test-track",
+            "number": "07",
+            "title": "Test Track",
+            "tagline": "Build a useful prototype.",
+            "description": "A test description for this track.",
+            "color_class": "track-purple",
+            "problem_statements": ["Help people solve a clear problem."],
+            "suggested_tech": ["React", "Python"],
+            "resources": [{"label": "Example docs", "url": "https://example.com/docs"}],
+            "sort_order": 7,
+            "published": True,
+            "registration_domain": "Other",
+        }
+        self.assertEqual(self.client.get("/api/admin/tracks").status_code, 403)
+        self.assertEqual(
+            self.client.post(
+                "/api/admin/tracks",
+                json=payload,
+                headers={"X-CSRF-Token": self.csrf},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.patch(
+                "/api/admin/tracks/1",
+                json={"tagline": "Updated tagline."},
+                headers={"X-CSRF-Token": self.csrf},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.delete(
+                "/api/admin/tracks/1",
+                headers={"X-CSRF-Token": self.csrf},
+            ).status_code,
+            403,
+        )
+
+        with self.app.app_context():
+            database = self.app.get_db()
+            database.execute(
+                "UPDATE users SET is_admin = TRUE WHERE email = ?",
+                ("smoke@example.invalid",),
+            )
+            database.commit()
+        self.assertEqual(self.client.get("/api/admin/tracks").status_code, 200)
+        missing_csrf = self.client.post("/api/admin/tracks", json=payload)
+        self.assertEqual(missing_csrf.status_code, 403)
+
+        created = self.client.post(
+            "/api/admin/tracks",
+            json=payload,
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        track_id = created.get_json()["track"]["id"]
+        updated = self.client.patch(
+            f"/api/admin/tracks/{track_id}",
+            json={"published": False, "tagline": "A revised tagline."},
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertFalse(updated.get_json()["track"]["published"])
+        deleted = self.client.delete(
+            f"/api/admin/tracks/{track_id}",
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(deleted.status_code, 200)
+
+    def test_track_seed_runs_only_when_table_is_empty(self):
+        with self.app.app_context():
+            database = self.app.get_db()
+            database.execute(
+                "UPDATE tracks SET tagline = ? WHERE slug = ?",
+                ("An organizer-edited tagline.", "artificial-intelligence"),
+            )
+            database.execute("DELETE FROM tracks WHERE slug = ?", ("open-innovation",))
+            database.commit()
+
+        restarted_app = create_app()
+        restarted_app.config["TESTING"] = True
+        restarted_client = restarted_app.test_client()
+        tracks = restarted_client.get("/api/tracks").get_json()["tracks"]
+        self.assertEqual(len(tracks), 5)
+        edited_track = restarted_client.get("/api/tracks/artificial-intelligence").get_json()["track"]
+        self.assertEqual(edited_track["tagline"], "An organizer-edited tagline.")
+        self.assertEqual(
+            restarted_client.get("/api/tracks/open-innovation").status_code,
+            404,
+        )
 
     def test_signup_registration_admin_and_export_routes(self):
         registration = {

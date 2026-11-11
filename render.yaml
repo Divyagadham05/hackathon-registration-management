@@ -17,3 +17,7 @@ services:
         sync: false
       - key: SESSION_COOKIE_SECURE
         value: "true"
+      - key: CHATBOT_REFUSAL_MESSAGE
+        value: "I can only help with questions about the Hack the Future hackathon and this website, such as registration, teams, schedule, rules, prizes and support. Please ask me something about those."
+      - key: CHATBOT_MAX_MESSAGE_LENGTH
+        value: "500"
